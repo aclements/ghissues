@@ -191,17 +191,17 @@ func (c *Client) oneRequest(urlStr string, retryCount int) (*http.Response, int,
 
 	resp, err := c.httpClient.Do(req)
 
-	isTransient := false
+	var transientErr error
 	if err != nil {
 		// A non-nil error from Do() indicates a failure to speak HTTP
 		// entirely. In a long-running sync, this is almost always a
 		// transient network issue (DNS failure, connection reset, timeout).
 		// While technically some url.Errors could be permanent, retrying
 		// all connection failures is a pragmatic choice for this tool.
-		isTransient = true
+		transientErr = err
 	} else if resp.StatusCode >= 500 && resp.StatusCode <= 599 {
 		// Server-side errors (5xx) are by definition transient.
-		isTransient = true
+		transientErr = fmt.Errorf("%s", resp.Status)
 	} else if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
 		// Handle Rate Limits (both primary and secondary)
 		sleepDuration, isRateLimit, err := c.parseRateLimit(resp)
@@ -217,7 +217,7 @@ func (c *Client) oneRequest(urlStr string, retryCount int) (*http.Response, int,
 		}
 	}
 
-	if isTransient {
+	if transientErr != nil {
 		if retryCount >= maxRetries {
 			if err != nil {
 				if resp != nil && resp.Body != nil {
@@ -236,7 +236,7 @@ func (c *Client) oneRequest(urlStr string, retryCount int) (*http.Response, int,
 			}
 			retryCount++
 			sleepDuration := time.Duration(1<<retryCount) * time.Second
-			c.logger.Logf("Transient error fetching %s, retrying in %v...\n", urlStr, sleepDuration)
+			c.logger.Logf("Transient error fetching %s: %s. Retrying in %v...\n", urlStr, transientErr, sleepDuration)
 			time.Sleep(sleepDuration)
 			return nil, retryCount, nil // Retry
 		}

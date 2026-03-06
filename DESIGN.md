@@ -59,6 +59,21 @@ endpoints.
     Comments stream and Events stream are mutually exclusive; there is
     no data duplication.
 
+**Pagination & Limits:**
+GitHub's REST API enforces a hard pagination limit of 300 pages (approx
+30,000 items) for generic list endpoints. For a repository like
+`golang/go` with over 400,000 comments, standard pagination would stop
+early.
+
+To solve this, whenever `ghmirror` reaches the end of an Issues or Comments
+stream (indicated by a missing "next" Link header), it automatically attempts to
+"stitch" the firehose. It synthesizes a brand new API request using the `since`
+parameter set to the timestamp of the newest item seen so far. If this fresh URL
+still results in zero items, then the stream is done. This allows the tool to
+seamlessly traverse an infinite number of items over time. The Events stream
+does not support the `since` parameter, so it cannot bypass the 30,000 item
+limit.
+
 ## 3. Sync Process
 
 The tool performs resumable, interleaved syncs to remain fast, respect
@@ -77,13 +92,16 @@ downloads.
         `{created_at}-event-{id}.json`). For incremental syncs,
         fetching events stops early by checking if the event's
         `created_at` timestamp is older than `last_event_sync`.
+    *   **Stitching:** If an Issues or Comments stream hits GitHub's
+        internal pagination wall, synthesize a new `since` URL to
+        continue seamlessly (see "Pagination & Limits" above).
     *   Save the current `next` URLs to `sync_state.json` after
         *every* page. If the process is interrupted, the next run
         resumes exactly where it left off.
 3.  **Update State & Commit:** Once all streams are exhausted, the
     tool updates `last_issue_sync`, `last_comment_sync`, and
-    `last_event_sync` with the current time and runs `git add .` and
-    `git commit`.
+    `last_event_sync` with the exact timestamps observed during the
+    pass and runs `git add .` and `git commit`.
 
 ## 4. Implementation Details
 

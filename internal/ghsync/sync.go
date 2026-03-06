@@ -5,11 +5,8 @@
 package ghsync
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -102,22 +99,68 @@ func (s *syncer) sync() (bool, error) {
 		return false, fmt.Errorf("state file version %d is newer than supported version 1", state.Version)
 	}
 
-	if state.IssuesNextURL == "" {
-		state.IssuesNextURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/issues?state=all&sort=updated&direction=asc&per_page=100", s.owner, s.repo)
-		if !state.LastIssueSync.IsZero() {
-			state.IssuesNextURL += "&since=" + url.QueryEscape(state.LastIssueSync.Format(time.RFC3339))
-		}
+	issuesStream := &pageStream{
+		client:  s.client,
+		nextURL: state.IssuesNextURL,
+		newest:  state.LastIssueSync,
+		pathFunc: func(meta *metadata) (string, error) {
+			issueNum, err := meta.issueNumber()
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(s.baseDir, "issues", fmt.Sprintf("%d", issueNum), "issue.json"), nil
+		},
+		initURL: func(since time.Time) string {
+			urlStr := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues?state=all&sort=updated&direction=asc&per_page=100", s.owner, s.repo)
+			if !since.IsZero() {
+				urlStr += "&since=" + url.QueryEscape(since.Format(time.RFC3339))
+			}
+			return urlStr
+		},
 	}
 
-	if state.CommentsNextURL == "" {
-		state.CommentsNextURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/comments?sort=updated&direction=asc&per_page=100", s.owner, s.repo)
-		if !state.LastCommentSync.IsZero() {
-			state.CommentsNextURL += "&since=" + url.QueryEscape(state.LastCommentSync.Format(time.RFC3339))
-		}
+	commentsStream := &pageStream{
+		client:  s.client,
+		nextURL: state.CommentsNextURL,
+		newest:  state.LastCommentSync,
+		pathFunc: func(meta *metadata) (string, error) {
+			issueNum, err := meta.issueNumber()
+			if err != nil {
+				return "", err
+			}
+			timeStr := meta.CreatedAt.UTC().Format(time.RFC3339)
+			return filepath.Join(s.baseDir, "issues", fmt.Sprintf("%d", issueNum), fmt.Sprintf("%s-comment-%d.json", timeStr, meta.ID)), nil
+		},
+		initURL: func(since time.Time) string {
+			urlStr := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/comments?sort=updated&direction=asc&per_page=100", s.owner, s.repo)
+			if !since.IsZero() {
+				urlStr += "&since=" + url.QueryEscape(since.Format(time.RFC3339))
+			}
+			return urlStr
+		},
 	}
 
-	if state.EventsNextURL == "" {
-		state.EventsNextURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/events?per_page=100", s.owner, s.repo)
+	eventsURL := state.EventsNextURL
+	if eventsURL == "" {
+		// The events stream does not support restarting.
+		eventsURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/events?per_page=100", s.owner, s.repo)
+	}
+	eventsStream := &pageStream{
+		client:   s.client,
+		nextURL:  eventsURL,
+		stopTime: state.LastEventSync,
+		pathFunc: func(meta *metadata) (string, error) {
+			issueNum, err := meta.issueNumber()
+			if err != nil {
+				return "", err
+			}
+			timeStr := meta.CreatedAt.UTC().Format(time.RFC3339)
+			return filepath.Join(s.baseDir, "issues", fmt.Sprintf("%d", issueNum), fmt.Sprintf("%s-event-%d.json", timeStr, meta.ID)), nil
+		},
+	}
+
+	anyChanges := func() bool {
+		return issuesStream.madeChange || commentsStream.madeChange || eventsStream.madeChange
 	}
 
 	syncMsg := fmt.Sprintf("Syncing %s/%s", s.owner, s.repo)
@@ -130,81 +173,50 @@ func (s *syncer) sync() (bool, error) {
 		}
 	}()
 
-	stateDirty := false
-	var newestIssueTime, newestCommentTime, newestEventTime time.Time
-
-	for state.IssuesNextURL != "" || state.CommentsNextURL != "" || state.EventsNextURL != "" {
+	for issuesStream.active() || commentsStream.active() || eventsStream.active() {
 		s.reporter.Progress(syncMsg)
 
-		if state.IssuesNextURL != "" {
-			// Issues are mutable (title, body, labels can change). We always
-			// process all items returned by the 'since' query to capture updates.
-			next, didWork, newest, err := s.fetchPage(state.IssuesNextURL, func(meta *metadata) string { return "issue.json" }, time.Time{})
-			if err != nil {
+		if issuesStream.active() {
+			if err := issuesStream.fetchNext(); err != nil {
 				return false, fmt.Errorf("syncing issues: %w", err)
 			}
-			state.IssuesNextURL = next
-			stateDirty = stateDirty || didWork
-			if newest.After(newestIssueTime) {
-				newestIssueTime = newest
-			}
+			state.IssuesNextURL = issuesStream.nextURL
 		}
 
-		if state.CommentsNextURL != "" {
-			// Comments are mutable (text can be edited). We always process all
-			// items returned by the 'since' query to capture updates.
-			next, didWork, newest, err := s.fetchPage(state.CommentsNextURL, func(meta *metadata) string {
-				timeStr := meta.CreatedAt.UTC().Format(time.RFC3339)
-				return fmt.Sprintf("%s-comment-%d.json", timeStr, meta.ID)
-			}, time.Time{})
-			if err != nil {
+		if commentsStream.active() {
+			if err := commentsStream.fetchNext(); err != nil {
 				return false, fmt.Errorf("syncing comments: %w", err)
 			}
-			state.CommentsNextURL = next
-			stateDirty = stateDirty || didWork
-			if newest.After(newestCommentTime) {
-				newestCommentTime = newest
-			}
+			state.CommentsNextURL = commentsStream.nextURL
 		}
 
-		if state.EventsNextURL != "" {
-			// Events are immutable and the API does not support 'since'.
-			// It returns the global firehose in descending order (newest first).
-			// We paginate backward until we hit an event older than our last sync.
-			next, didWork, newest, err := s.fetchPage(state.EventsNextURL, func(meta *metadata) string {
-				timeStr := meta.CreatedAt.UTC().Format(time.RFC3339)
-				return fmt.Sprintf("%s-event-%d.json", timeStr, meta.ID)
-			}, state.LastEventSync)
-			if err != nil {
+		if eventsStream.active() {
+			if err := eventsStream.fetchNext(); err != nil {
 				return false, fmt.Errorf("syncing events: %w", err)
 			}
-			state.EventsNextURL = next
-			stateDirty = stateDirty || didWork
-			if newest.After(newestEventTime) {
-				newestEventTime = newest
-			}
+			state.EventsNextURL = eventsStream.nextURL
 		}
 
-		if stateDirty {
+		if anyChanges() {
 			if err := saveState(s.baseDir, state); err != nil {
 				return false, fmt.Errorf("saving state: %w", err)
 			}
 		}
 	}
 
-	if stateDirty {
+	if anyChanges() {
 		// Update state for the next run using the exact timestamps from GitHub.
 		// Since parameters in the GitHub API are inclusive, we don't need to
 		// adjust these. The next sync will simply re-fetch the boundary items
 		// and safely overwrite them due to our bytes.Equal check.
-		if !newestIssueTime.IsZero() {
-			state.LastIssueSync = newestIssueTime.UTC()
+		if !issuesStream.newest.IsZero() {
+			state.LastIssueSync = issuesStream.newest.UTC()
 		}
-		if !newestCommentTime.IsZero() {
-			state.LastCommentSync = newestCommentTime.UTC()
+		if !commentsStream.newest.IsZero() {
+			state.LastCommentSync = commentsStream.newest.UTC()
 		}
-		if !newestEventTime.IsZero() {
-			state.LastEventSync = newestEventTime.UTC()
+		if !eventsStream.newest.IsZero() {
+			state.LastEventSync = eventsStream.newest.UTC()
 		}
 
 		if err := saveState(s.baseDir, state); err != nil {
@@ -214,74 +226,5 @@ func (s *syncer) sync() (bool, error) {
 
 	syncState = "done"
 	s.reporter.ProgressDone(syncMsg, "done")
-	return stateDirty, nil
-}
-
-func (s *syncer) fetchPage(urlStr string, nameFunc func(*metadata) string, stopTime time.Time) (string, bool, time.Time, error) {
-	items, nextPage, err := s.client.DoRequestList(urlStr)
-	if err != nil {
-		return "", false, time.Time{}, err
-	}
-
-	madeChanges := false
-	var newest time.Time
-	for _, item := range items {
-		meta, err := parseMetadata(item)
-		if err != nil {
-			return "", false, time.Time{}, fmt.Errorf("failed to parse metadata: %w", err)
-		}
-
-		if meta.UpdatedAt.After(newest) {
-			newest = meta.UpdatedAt
-		}
-		if meta.CreatedAt.After(newest) {
-			newest = meta.CreatedAt
-		}
-
-		issueNum, err := meta.issueNumber()
-		if err != nil {
-			continue
-		}
-
-		if !stopTime.IsZero() && !meta.CreatedAt.IsZero() && meta.CreatedAt.Before(stopTime) {
-			// For immutable descending streams (events), if the event is older
-			// than our last successful sync, we know we've caught up.
-			return "", madeChanges, newest, nil
-		}
-
-		filename := nameFunc(meta)
-		dir := filepath.Join(s.baseDir, "issues", fmt.Sprintf("%d", issueNum))
-		path := filepath.Join(dir, filename)
-
-		var prettyJSON bytes.Buffer
-		if err := json.Indent(&prettyJSON, item, "", "  "); err != nil {
-			prettyJSON.Write(item)
-		}
-		prettyJSON.WriteByte('\n')
-
-		// Check if file already exists and has identical contents to avoid spurious state updates
-		existingData, err := os.ReadFile(path)
-		if err == nil && bytes.Equal(existingData, prettyJSON.Bytes()) {
-			// No change to this item
-			continue
-		}
-
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return "", false, time.Time{}, fmt.Errorf("creating directory %s: %w", dir, err)
-		}
-
-		tmpPath := path + ".tmp"
-		if err := os.WriteFile(tmpPath, prettyJSON.Bytes(), 0644); err != nil {
-			return "", false, time.Time{}, fmt.Errorf("writing temporary file %s: %w", tmpPath, err)
-		}
-
-		if err := os.Rename(tmpPath, path); err != nil {
-			os.Remove(tmpPath) // Best effort cleanup
-			return "", false, time.Time{}, fmt.Errorf("renaming file %s: %w", path, err)
-		}
-
-		madeChanges = true
-	}
-
-	return nextPage, madeChanges, newest, nil
+	return anyChanges(), nil
 }
