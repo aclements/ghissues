@@ -1,6 +1,6 @@
-# ghmirror: GitHub issues mirror tool
+# ghissues: GitHub issues mirror tool
 
-`ghmirror` is a fast, efficient CLI tool designed to create and
+`ghissues` is a fast, efficient CLI tool designed to create and
 maintain a local, fully version-controlled mirror of a GitHub
 repository's issue tracker.
 
@@ -12,29 +12,29 @@ standard UNIX tools or custom scripts.
 ## Usage
 
 ```bash
-go run ./cmd/ghmirror [flags] <owner/repo>...
+go run ./cmd/ghissues [flags] <owner/repo>...
 ```
 
-See `go run ./cmd/ghmirror -h` for additional flags.
+See `go run ./cmd/ghissues -h` for additional flags.
 
 ### Examples
 
 Mirror a single repository into the default `./_mirror` directory:
 
 ```bash
-go run ./cmd/ghmirror golang/go
+go run ./cmd/ghissues golang/go
 ```
 
 Mirror multiple repositories into a custom directory:
 
 ```bash
-go run ./cmd/ghmirror -dir /mnt/data/my_mirrors golang/go octocat/Hello-World
+go run ./cmd/ghissues -dir /mnt/data/my_mirrors golang/go octocat/Hello-World
 ```
 
 ## Authentication
 
 To respect rate limits and allow for massive initial downloads,
-`ghmirror` requires a GitHub Fine-Grained Personal Access Token.
+`ghissues` requires a GitHub Fine-Grained Personal Access Token.
 
 The token needs **Read-only** access to the **Issues** and
 **Metadata** scopes.
@@ -44,7 +44,7 @@ You can provide the token in two ways:
 2.  **Interactive Prompt:** If you run the tool without the
     environment variable set, it will securely prompt you to paste
     your token. It will then save this token to your local OS
-    configuration directory (e.g., `~/.config/ghmirror/github.tok`) so
+    configuration directory (e.g., `~/.config/ghissues/github.tok`) so
     you never have to enter it again.
 
 ## Data Layout & Design

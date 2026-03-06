@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aclements/ghmirror/internal/github"
+	"github.com/aclements/ghissues/internal/github"
 )
 
 // makeIssue Helper to generate fake items for tests

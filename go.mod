@@ -1,4 +1,4 @@
-module github.com/aclements/ghmirror
+module github.com/aclements/ghissues
 
 go 1.25.0
 

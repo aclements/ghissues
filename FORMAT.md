@@ -1,6 +1,6 @@
-# ghmirror Data Format
+# ghissues Data Format
 
-The `ghmirror` tool stores raw JSON responses directly from the GitHub
+The `ghissues` tool stores raw JSON responses directly from the GitHub
 API into a predictable directory structure.
 
 Because the data is raw, it is future-proof: if GitHub adds new fields
@@ -86,7 +86,7 @@ If you are building an analysis tool on top of this mirror that
 requires expensive processing, you can use the underlying Git
 repository to perform efficient partial cache invalidation.
 
-Because `ghmirror` automatically commits its changes, a downstream
+Because `ghissues` automatically commits its changes, a downstream
 client can easily determine exactly what files have changed since the
 client's last analysis run.
 

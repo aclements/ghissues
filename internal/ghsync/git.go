@@ -52,10 +52,10 @@ func (s *syncer) commitChanges() error {
 	cmd = exec.Command("git", "commit", "--no-verify", "-m", commitMsg)
 	cmd.Dir = s.rootDir
 	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=ghmirror",
-		"GIT_AUTHOR_EMAIL=ghmirror@localhost",
-		"GIT_COMMITTER_NAME=ghmirror",
-		"GIT_COMMITTER_EMAIL=ghmirror@localhost",
+		"GIT_AUTHOR_NAME=ghissues",
+		"GIT_AUTHOR_EMAIL=ghissues@localhost",
+		"GIT_COMMITTER_NAME=ghissues",
+		"GIT_COMMITTER_EMAIL=ghissues@localhost",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

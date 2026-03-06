@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/aclements/ghmirror/internal/github"
+	"github.com/aclements/ghissues/internal/github"
 )
 
 func tokenFilePath() string {
@@ -21,7 +21,7 @@ func tokenFilePath() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(configDir, "ghmirror", "github.tok")
+	return filepath.Join(configDir, "ghissues", "github.tok")
 }
 
 func getToken() string {

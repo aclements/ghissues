@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/aclements/ghmirror/internal/github"
+	"github.com/aclements/ghissues/internal/github"
 )
 
 type pageStream struct {

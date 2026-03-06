@@ -10,8 +10,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/aclements/ghmirror/internal/ghsync"
-	"github.com/aclements/ghmirror/internal/github"
+	"github.com/aclements/ghissues/internal/ghsync"
+	"github.com/aclements/ghissues/internal/github"
 )
 
 type cliReporter struct {

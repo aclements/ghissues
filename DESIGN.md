@@ -1,7 +1,7 @@
 # GitHub Repository Mirror Tool - Design & Implementation
 
 This document outlines the architectural decisions and justifications
-behind `ghmirror`.
+behind `ghissues`.
 
 For details on the actual data layout and how to interpret the
 mirrored files, see [FORMAT.md](FORMAT.md).
@@ -65,14 +65,14 @@ GitHub's REST API enforces a hard pagination limit of 300 pages (approx
 `golang/go` with over 400,000 comments, standard pagination would stop
 early.
 
-To solve this, whenever `ghmirror` reaches the end of an Issues or Comments
-stream (indicated by a missing "next" Link header), it automatically attempts to
-"stitch" the firehose. It synthesizes a brand new API request using the `since`
-parameter set to the timestamp of the newest item seen so far. If this fresh URL
-still results in zero items, then the stream is done. This allows the tool to
-seamlessly traverse an infinite number of items over time. The Events stream
-does not support the `since` parameter, so it cannot bypass the 30,000 item
-limit.
+To solve this, whenever `ghissues` reaches the end of an Issues or
+Comments stream (indicated by a missing "next" Link header), it
+automatically attempts to "stitch" the firehose. It synthesizes a brand
+new API request using the `since` parameter set to the timestamp of the
+newest item seen so far. If this fresh URL still results in zero items,
+then the stream is done. This allows the tool to seamlessly traverse an
+infinite number of items over time. The Events stream does not support
+the `since` parameter, so it cannot bypass the 30,000 item limit.
 
 ## 3. Sync Process
 

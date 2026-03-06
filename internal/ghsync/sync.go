@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/aclements/ghmirror/internal/github"
+	"github.com/aclements/ghissues/internal/github"
 )
 
 // Reporter allows the caller to receive progress updates and non-fatal warnings
