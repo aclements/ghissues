@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 )
 
 const stateFilename = "sync_state.json"
@@ -19,24 +18,12 @@ const stateFilename = "sync_state.json"
 // to allow resuming interrupted syncs, and upon completion to act as the
 // baseline for the next incremental sync.
 type state struct {
-	// Version is the schema version of this state file. Defaults to 1.
+	// Version is the schema version of this state file. Defaults to 2.
 	Version int `json:"version"`
 
-	// These NextURL fields represent the active paginator for each stream.
-	// They are populated at the start of a sync and updated after every page
-	// is successfully processed. When a sync completes fully, these are empty.
-	// If a sync is interrupted, the next run will resume from these URLs.
-	IssuesNextURL   string `json:"issues_next_url,omitempty"`
-	CommentsNextURL string `json:"comments_next_url,omitempty"`
-	EventsNextURL   string `json:"events_next_url,omitempty"`
-
-	// These Sync fields record the timestamp of the last *fully completed*
-	// sync pass. They are used to generate the "since" queries for the next
-	// incremental sync run (or as the stopping condition for the Events stream).
-	// They are ONLY updated at the very end of a successful sync pass.
-	LastIssueSync   time.Time `json:"last_issue_sync,omitzero"`
-	LastCommentSync time.Time `json:"last_comment_sync,omitzero"`
-	LastEventSync   time.Time `json:"last_event_sync,omitzero"`
+	Issues   streamState `json:"issues"`
+	Comments streamState `json:"comments"`
+	Events   streamState `json:"events"`
 }
 
 // loadState reads the synchronization state from disk.

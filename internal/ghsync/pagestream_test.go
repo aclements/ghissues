@@ -62,6 +62,7 @@ func TestPageStream(t *testing.T) {
 	client := github.NewClient(ts.Client(), "", nil)
 	dir := t.TempDir()
 
+	st := &streamState{}
 	ps := &pageStream{
 		client: client,
 		pathFunc: func(meta *metadata) (string, error) {
@@ -78,60 +79,60 @@ func TestPageStream(t *testing.T) {
 	}
 
 	// Fetch first page
-	if !ps.active() {
+	if !ps.active(st) {
 		t.Fatal("expected stream to be active")
 	}
-	if err := ps.fetchNext(); err != nil {
+	if err := ps.fetchNext(st); err != nil {
 		t.Fatal(err)
 	}
 	if !ps.madeChange {
 		t.Error("expected madeChange=true")
 	}
 	ps.madeChange = false
-	if ps.newest != t1 {
-		t.Errorf("expected newest %v, got %v", t1, ps.newest)
+	if st.Newest != t1 {
+		t.Errorf("expected newest %v, got %v", t1, st.Newest)
 	}
 
 	// Fetch second page
-	if err := ps.fetchNext(); err != nil {
+	if err := ps.fetchNext(st); err != nil {
 		t.Fatal(err)
 	}
 	if !ps.madeChange {
 		t.Error("expected madeChange=true")
 	}
 	ps.madeChange = false
-	if ps.newest != t2 {
-		t.Errorf("expected newest %v, got %v", t2, ps.newest)
+	if st.Newest != t2 {
+		t.Errorf("expected newest %v, got %v", t2, st.Newest)
 	}
 
 	// Should have synthesized new URL based on newest
 	expectedNext := ts.URL + "/repos/test/repo/issues?since=" + t2.Format(time.RFC3339)
-	if ps.nextURL != expectedNext {
-		t.Errorf("expected nextURL %q, got %q", expectedNext, ps.nextURL)
+	if st.NextURL != expectedNext {
+		t.Errorf("expected NextURL %q, got %q", expectedNext, st.NextURL)
 	}
 
 	// Fetch third page (the restart, returning 0 items)
-	if !ps.active() {
+	if !ps.active(st) {
 		t.Fatal("expected stream to be active for restart")
 	}
-	if err := ps.fetchNext(); err != nil {
+	if err := ps.fetchNext(st); err != nil {
 		t.Fatal(err)
 	}
 	if ps.madeChange {
 		t.Error("expected madeChange=false for empty page")
 	}
-	if ps.active() {
+	if ps.active(st) {
 		t.Error("expected stream to be done")
 	}
 
 	// Try one more following restart.
-	if err := ps.fetchNext(); err != nil {
+	if err := ps.fetchNext(st); err != nil {
 		t.Fatal(err)
 	}
 	if ps.madeChange {
 		t.Error("expected madeChange=false for empty page")
 	}
-	if ps.active() {
+	if ps.active(st) {
 		t.Error("expected stream to be done")
 	}
 
@@ -168,21 +169,23 @@ func TestPageStream_StopTime(t *testing.T) {
 
 	stopTime := t2.Add(30 * time.Minute) // Between t2 and t1
 
+	st := &streamState{
+		NextURL:  ts.URL + "/repos/test/repo/events",
+		StopTime: stopTime,
+	}
 	ps := &pageStream{
-		client:   client,
-		nextURL:  ts.URL + "/repos/test/repo/events",
-		stopTime: stopTime,
+		client: client,
 		pathFunc: func(meta *metadata) (string, error) {
 			num, _ := meta.issueNumber()
 			return filepath.Join(dir, fmt.Sprintf("%d.json", num)), nil
 		},
 	}
 
-	if err := ps.fetchNext(); err != nil {
+	if err := ps.fetchNext(st); err != nil {
 		t.Fatal(err)
 	}
 
-	if ps.active() {
+	if ps.active(st) {
 		t.Error("expected stream to be done due to stopTime")
 	}
 
@@ -227,13 +230,15 @@ func TestPageStream_IdenticalContents(t *testing.T) {
 	os.MkdirAll(dir, 0755)
 	os.WriteFile(filepath.Join(dir, "1.json"), prettyJSON.Bytes(), 0644)
 
+	st := &streamState{
+		NextURL: ts.URL + "/repos/test/repo/issues",
+	}
 	ps := &pageStream{
 		client:   client,
-		nextURL:  ts.URL + "/repos/test/repo/issues",
 		pathFunc: pathFunc,
 	}
 
-	if err := ps.fetchNext(); err != nil {
+	if err := ps.fetchNext(st); err != nil {
 		t.Fatal(err)
 	}
 

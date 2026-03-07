@@ -80,28 +80,31 @@ The tool performs resumable, interleaved syncs to remain fast, respect
 rate limits, and safely handle interruptions during massive initial
 downloads.
 
-1.  **Read State:** Load `sync_state.json`. If it's a new sync pass,
-    initialize the `next` URLs for Issues, Comments, and Events.
-    Issues and Comments use `since={last_sync}` and are explicitly
-    sorted chronologically (`sort=updated&direction=asc`).
-2.  **Interleaved Fetching:** Loop continuously while any stream has a
-    `next` URL:
-    *   Fetch 1 page of Issues (saving `issue.json`).
-    *   Fetch 1 page of Comments (saving `{created_at}-comment-{id}.json`).
-    *   Fetch 1 page of Events (saving
-        `{created_at}-event-{id}.json`). For incremental syncs,
-        fetching events stops early by checking if the event's
-        `created_at` timestamp is older than `last_event_sync`.
-    *   **Stitching:** If an Issues or Comments stream hits GitHub's
-        internal pagination wall, synthesize a new `since` URL to
-        continue seamlessly (see "Pagination & Limits" above).
-    *   Save the current `next` URLs to `sync_state.json` after
-        *every* page. If the process is interrupted, the next run
-        resumes exactly where it left off.
-3.  **Update State & Commit:** Once all streams are exhausted, the
-    tool updates `last_issue_sync`, `last_comment_sync`, and
-    `last_event_sync` with the exact timestamps observed during the
-    pass and runs `git add .` and `git commit`.
+1.  **Read State:** Load `sync_state.json`. If a stream's `NextURL`
+    is empty and it hasn't been initialized for this pass, it is
+    synthesized (e.g., using `since={Newest}`).
+2.  **Interleaved Fetching:** Loop continuously until all streams are
+    exhausted (no `NextURL` and no initialization logic remaining):
+    *   Fetch 1 page of Issues.
+    *   Fetch 1 page of Comments.
+    *   Fetch 1 page of Events. For descending streams like Events,
+        fetching stops early if an item is older than the stream's
+        `StopTime`.
+    *   **Continuous State Saving:** The stream states are updated in
+        memory and saved to `sync_state.json` after *every* page.
+3.  **Finalize & Commit:** Once all streams are exhausted, the tool
+    performs final state updates (e.g., updating `StopTime` for the
+    next incremental pass) and runs `git add .` and `git commit`.
+
+### Unified resumption
+
+The synchronization state reflected in `sync_state.json` is the single
+source of truth for the entire process. Each data stream (Issues,
+Comments, Events) stores its full state in this object and each
+iteration of the sync loop simply updates this single source of state.
+This means there's virtually no difference between resuming an
+interrupted sync and each iteration of the regular sync loop. This
+unified approach reduces the risk of bugs during sync resumption.
 
 ## 4. Implementation Details
 

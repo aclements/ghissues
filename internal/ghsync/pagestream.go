@@ -15,23 +15,24 @@ import (
 	"github.com/aclements/ghissues/internal/github"
 )
 
+// streamState represents the persistent state of a paginated API stream.
+type streamState struct {
+	// NextURL is the URL of the next page to fetch. If empty, the stream
+	// may be initialized. When a stream is truly exhausted, this is empty.
+	NextURL string `json:"next_url,omitempty"`
+
+	// Newest is the latest timestamp (CreatedAt or UpdatedAt) observed in this
+	// stream so far. It acts as the "since" query for the next incremental sync.
+	Newest time.Time `json:"newest,omitzero"`
+
+	// StopTime is the timestamp at which to stop fetching for descending
+	// streams. If non-zero, fetching stops when encountering an item older than this.
+	StopTime time.Time `json:"stop_time,omitzero"`
+}
+
 type pageStream struct {
 	// client is the GitHub API client used to fetch pages.
 	client *github.Client
-
-	// nextURL is the URL of the next page to fetch. If empty, the stream
-	// may be initialized using initURL.
-	nextURL string
-
-	// newest is the latest timestamp (CreatedAt or UpdatedAt) observed in this
-	// stream so far. May be set by the caller to pass an initial timestamp to
-	// initURL.
-	newest time.Time
-
-	// stopTime is the timestamp at which to stop fetching for descending
-	// streams (like events). If non-zero, fetchNext will clear nextURL if
-	// it encounters an item older than stopTime.
-	stopTime time.Time
 
 	// madeChange is true if any item in this stream was newly created or
 	// updated on disk during this sync pass.
@@ -47,32 +48,32 @@ type pageStream struct {
 	initURL func(since time.Time) string
 }
 
-func (ps *pageStream) active() bool {
-	return !(ps.nextURL == "" && ps.initURL == nil)
+func (ps *pageStream) active(st *streamState) bool {
+	return !(st.NextURL == "" && ps.initURL == nil)
 }
 
-func (ps *pageStream) done() {
-	ps.nextURL = ""
+func (ps *pageStream) done(st *streamState) {
+	st.NextURL = ""
 	ps.initURL = nil
 }
 
 // fetchNext retrieves a single page from the GitHub API and writes the items
-// to disk. It updates ps.nextURL, ps.newest, and ps.madeChange.
-func (ps *pageStream) fetchNext() error {
-	if ps.nextURL == "" {
+// to disk. It updates st.NextURL, st.Newest, and ps.madeChange.
+func (ps *pageStream) fetchNext(st *streamState) error {
+	if st.NextURL == "" {
 		if ps.initURL == nil {
 			return nil
 		}
-		ps.nextURL = ps.initURL(ps.newest)
+		st.NextURL = ps.initURL(st.Newest)
 	}
 
-	items, nextPage, err := ps.client.DoRequestList(ps.nextURL)
+	items, nextPage, err := ps.client.DoRequestList(st.NextURL)
 	if err != nil {
 		return err
 	}
 
 	if len(items) == 0 {
-		ps.done()
+		ps.done(st)
 		return nil
 	}
 
@@ -82,17 +83,17 @@ func (ps *pageStream) fetchNext() error {
 			return fmt.Errorf("failed to parse metadata: %w", err)
 		}
 
-		if meta.UpdatedAt.After(ps.newest) {
-			ps.newest = meta.UpdatedAt
+		if meta.UpdatedAt.After(st.Newest) {
+			st.Newest = meta.UpdatedAt
 		}
-		if meta.CreatedAt.After(ps.newest) {
-			ps.newest = meta.CreatedAt
+		if meta.CreatedAt.After(st.Newest) {
+			st.Newest = meta.CreatedAt
 		}
 
-		if !ps.stopTime.IsZero() && !meta.CreatedAt.IsZero() && meta.CreatedAt.Before(ps.stopTime) {
+		if !st.StopTime.IsZero() && !meta.CreatedAt.IsZero() && meta.CreatedAt.Before(st.StopTime) {
 			// For immutable descending streams (events), if the event is older
 			// than our last successful sync, we know we've caught up.
-			ps.done()
+			ps.done(st)
 			return nil
 		}
 
@@ -135,18 +136,18 @@ func (ps *pageStream) fetchNext() error {
 	}
 
 	if nextPage != "" {
-		ps.nextURL = nextPage
+		st.NextURL = nextPage
 	} else if ps.initURL != nil {
 		// If we run out of pages, try starting a fresh sequence from the newest
 		// timestamp we've seen. This allows us to transparently bypass GitHub's
 		// 300-page limit for repository-wide lists.
-		fresh := ps.initURL(ps.newest)
-		if ps.nextURL == fresh {
+		fresh := ps.initURL(st.Newest)
+		if st.NextURL == fresh {
 			// We already tried this exact URL and got no next page,
 			// which means we've reached the true end of the stream.
-			ps.done()
+			ps.done(st)
 		} else {
-			ps.nextURL = fresh
+			st.NextURL = fresh
 		}
 	}
 

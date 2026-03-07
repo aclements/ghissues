@@ -93,16 +93,15 @@ func (s *syncer) sync() (bool, error) {
 	}
 
 	if state.Version == 0 {
-		state.Version = 1
+		// Initialize to version 2
+		state.Version = 2
 	}
-	if state.Version > 1 {
-		return false, fmt.Errorf("state file version %d is newer than supported version 1", state.Version)
+	if state.Version != 2 {
+		return false, fmt.Errorf("state file version %d is not supported version 2", state.Version)
 	}
 
 	issuesStream := &pageStream{
-		client:  s.client,
-		nextURL: state.IssuesNextURL,
-		newest:  state.LastIssueSync,
+		client: s.client,
 		pathFunc: func(meta *metadata) (string, error) {
 			issueNum, err := meta.issueNumber()
 			if err != nil {
@@ -120,9 +119,7 @@ func (s *syncer) sync() (bool, error) {
 	}
 
 	commentsStream := &pageStream{
-		client:  s.client,
-		nextURL: state.CommentsNextURL,
-		newest:  state.LastCommentSync,
+		client: s.client,
 		pathFunc: func(meta *metadata) (string, error) {
 			issueNum, err := meta.issueNumber()
 			if err != nil {
@@ -140,15 +137,14 @@ func (s *syncer) sync() (bool, error) {
 		},
 	}
 
-	eventsURL := state.EventsNextURL
-	if eventsURL == "" {
-		// The events stream does not support restarting.
-		eventsURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/events?per_page=100", s.owner, s.repo)
+	if state.Events.NextURL == "" && state.Events.Newest.IsZero() {
+		// The events stream does not support restarting via since. If we have no next URL
+		// and we haven't seen any newest events (implying this is a completely fresh stream),
+		// initialize it.
+		state.Events.NextURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/events?per_page=100", s.owner, s.repo)
 	}
 	eventsStream := &pageStream{
-		client:   s.client,
-		nextURL:  eventsURL,
-		stopTime: state.LastEventSync,
+		client: s.client,
 		pathFunc: func(meta *metadata) (string, error) {
 			issueNum, err := meta.issueNumber()
 			if err != nil {
@@ -173,28 +169,19 @@ func (s *syncer) sync() (bool, error) {
 		}
 	}()
 
-	for issuesStream.active() || commentsStream.active() || eventsStream.active() {
+	for issuesStream.active(&state.Issues) || commentsStream.active(&state.Comments) || eventsStream.active(&state.Events) {
 		s.reporter.Progress(syncMsg)
 
-		if issuesStream.active() {
-			if err := issuesStream.fetchNext(); err != nil {
-				return false, fmt.Errorf("syncing issues: %w", err)
-			}
-			state.IssuesNextURL = issuesStream.nextURL
+		if err := issuesStream.fetchNext(&state.Issues); err != nil {
+			return false, fmt.Errorf("syncing issues: %w", err)
 		}
 
-		if commentsStream.active() {
-			if err := commentsStream.fetchNext(); err != nil {
-				return false, fmt.Errorf("syncing comments: %w", err)
-			}
-			state.CommentsNextURL = commentsStream.nextURL
+		if err := commentsStream.fetchNext(&state.Comments); err != nil {
+			return false, fmt.Errorf("syncing comments: %w", err)
 		}
 
-		if eventsStream.active() {
-			if err := eventsStream.fetchNext(); err != nil {
-				return false, fmt.Errorf("syncing events: %w", err)
-			}
-			state.EventsNextURL = eventsStream.nextURL
+		if err := eventsStream.fetchNext(&state.Events); err != nil {
+			return false, fmt.Errorf("syncing events: %w", err)
 		}
 
 		if anyChanges() {
@@ -205,19 +192,8 @@ func (s *syncer) sync() (bool, error) {
 	}
 
 	if anyChanges() {
-		// Update state for the next run using the exact timestamps from GitHub.
-		// Since parameters in the GitHub API are inclusive, we don't need to
-		// adjust these. The next sync will simply re-fetch the boundary items
-		// and safely overwrite them due to our bytes.Equal check.
-		if !issuesStream.newest.IsZero() {
-			state.LastIssueSync = issuesStream.newest.UTC()
-		}
-		if !commentsStream.newest.IsZero() {
-			state.LastCommentSync = commentsStream.newest.UTC()
-		}
-		if !eventsStream.newest.IsZero() {
-			state.LastEventSync = eventsStream.newest.UTC()
-		}
+		// Prepare StopTime for the next run.
+		state.Events.StopTime = state.Events.Newest
 
 		if err := saveState(s.baseDir, state); err != nil {
 			return false, fmt.Errorf("saving final state: %w", err)
