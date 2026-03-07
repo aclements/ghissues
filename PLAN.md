@@ -37,7 +37,7 @@ After each step, STOP to allow human review. DO NOT proceed to the next step unt
 ## 6. Integration
 *   Add the backfill processing step to the `for` loop in `sync.go` alongside issues, comments, and events. This ensures that backfill progress is continually saved to `sync_state.json` and perfectly resumable if interrupted.
 
-## 7. GitHub Client Modifications
+## 7. GitHub Client Modifications [COMPLETED]
 *   Update `internal/github/client.go` to support conditional requests with ETags using the existing `DoRequest` and `DoRequestList` methods.
 *   Create a `RequestOptions` struct with an `ETag string` field to pass conditional headers. Add this as an argument to the existing `DoRequest` and `DoRequestList` methods.
 *   Create a `Response` struct to encapsulate metadata returned by requests: `NextURL string`, `ETag string`, and `NotModified bool`.

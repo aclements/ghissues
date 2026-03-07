@@ -40,12 +40,12 @@ func TestSuccess(t *testing.T) {
 	client := NewClient(nil, "test-token", t)
 
 	t.Run("DoRequestList", func(t *testing.T) {
-		items, next, err := client.DoRequestList(ts.URL + "/list")
+		items, resp, err := client.DoRequestList(ts.URL+"/list", nil)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		if next != "https://api.github.com/res?page=2" {
-			t.Errorf("Expected next page URL, got: %q", next)
+		if resp.NextURL != "https://api.github.com/res?page=2" {
+			t.Errorf("Expected next page URL, got: %q", resp.NextURL)
 		}
 		if len(items) != 2 {
 			t.Errorf("Expected 2 items, got %d", len(items))
@@ -53,7 +53,7 @@ func TestSuccess(t *testing.T) {
 	})
 
 	t.Run("DoRequestSingle", func(t *testing.T) {
-		item, err := client.DoRequestSingle(ts.URL + "/single")
+		item, _, err := client.DoRequestSingle(ts.URL+"/single", nil)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -63,6 +63,48 @@ func TestSuccess(t *testing.T) {
 		}
 		if parsed.ID != 3 {
 			t.Errorf("Expected id=3, got: %v", parsed.ID)
+		}
+	})
+}
+
+func TestConditionalRequest(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		etag := r.Header.Get("If-None-Match")
+		if etag == "test-etag" {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", "test-etag")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": 1}`))
+	}))
+	defer ts.Close()
+
+	client := NewClient(nil, "", t)
+
+	t.Run("InitialRequest", func(t *testing.T) {
+		_, resp, err := client.DoRequestSingle(ts.URL, nil)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if resp.ETag != "test-etag" {
+			t.Errorf("Expected ETag test-etag, got %q", resp.ETag)
+		}
+		if resp.NotModified {
+			t.Error("Expected NotModified=false")
+		}
+	})
+
+	t.Run("ConditionalRequest", func(t *testing.T) {
+		item, resp, err := client.DoRequestSingle(ts.URL, &RequestOptions{ETag: "test-etag"})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if !resp.NotModified {
+			t.Error("Expected NotModified=true")
+		}
+		if item != nil {
+			t.Errorf("Expected nil item for 304, got %s", string(item))
 		}
 	})
 }
@@ -117,7 +159,7 @@ func TestErrors(t *testing.T) {
 
 			// Test List variant
 			t.Run("DoRequestList", func(t *testing.T) {
-				items, _, err := client.DoRequestList(ts.URL)
+				items, _, err := client.DoRequestList(ts.URL, nil)
 				verifyError(t, err, tt.wantErr, tt.wantAuth)
 				if tt.wantErr == "" && len(items) != 0 {
 					t.Errorf("Expected empty list, got %d items", len(items))
@@ -126,7 +168,7 @@ func TestErrors(t *testing.T) {
 
 			// Test Single variant
 			t.Run("DoRequestSingle", func(t *testing.T) {
-				item, err := client.DoRequestSingle(ts.URL)
+				item, _, err := client.DoRequestSingle(ts.URL, nil)
 				verifyError(t, err, tt.wantErr, tt.wantAuth)
 				if tt.wantErr == "" && item != nil {
 					t.Errorf("Expected nil item, got %s", string(item))
@@ -140,7 +182,7 @@ func verifyError(t *testing.T, err error, wantErr string, wantAuth bool) {
 	t.Helper()
 	if wantErr == "" {
 		if err != nil {
-			t.Fatalf("Expected no error, got: %v", err)
+			t.Fatalf("Unexpected error, got: %v", err)
 		}
 		return
 	}
@@ -213,7 +255,7 @@ func TestRateLimit(t *testing.T) {
 		client := NewClient(hc, "", t)
 
 		start := time.Now()
-		_, _, err := client.DoRequestList("https://api.github.com/foo")
+		_, _, err := client.DoRequestList("https://api.github.com/foo", nil)
 		duration := time.Since(start)
 
 		if err != nil {
@@ -252,7 +294,7 @@ func TestRetry(t *testing.T) {
 		client := NewClient(hc, "", t)
 
 		start := time.Now()
-		items, _, err := client.DoRequestList("https://api.github.com/foo")
+		items, _, err := client.DoRequestList("https://api.github.com/foo", nil)
 		duration := time.Since(start)
 
 		if err != nil {

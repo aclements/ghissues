@@ -67,9 +67,14 @@ func (ps *pageStream) fetchNext(st *streamState) error {
 		st.NextURL = ps.initURL(st.Newest)
 	}
 
-	items, nextPage, err := ps.client.DoRequestList(st.NextURL)
+	items, resp, err := ps.client.DoRequestList(st.NextURL, nil)
 	if err != nil {
 		return err
+	}
+
+	if resp.NotModified {
+		ps.done(st)
+		return nil
 	}
 
 	if len(items) == 0 {
@@ -139,8 +144,8 @@ func (ps *pageStream) fetchNext(st *streamState) error {
 		ps.madeChange = true
 	}
 
-	if nextPage != "" {
-		st.NextURL = nextPage
+	if resp.NextURL != "" {
+		st.NextURL = resp.NextURL
 	} else if ps.initURL != nil {
 		// If we run out of pages, try starting a fresh sequence from the newest
 		// timestamp we've seen. This allows us to transparently bypass GitHub's

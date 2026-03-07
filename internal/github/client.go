@@ -71,57 +71,79 @@ func NewClient(httpClient *http.Client, token string, logger Logger) *Client {
 	}
 }
 
+// RequestOptions allows passing additional parameters to API requests.
+type RequestOptions struct {
+	ETag string
+}
+
+// Response contains metadata about the API response.
+type Response struct {
+	NextURL     string
+	ETag        string
+	NotModified bool
+}
+
 // DoRequestList makes a GET request to the given GitHub API URL and expects a JSON array.
 // It handles authentication, rate limit sleeps, and returns the raw JSON
-// of the items and the URL for the next page (if any).
-func (c *Client) DoRequestList(urlStr string) ([]json.RawMessage, string, error) {
-	body, nextPage, err := c.doRequestBytes(urlStr)
+// of the items and the response metadata.
+func (c *Client) DoRequestList(urlStr string, opts *RequestOptions) ([]json.RawMessage, *Response, error) {
+	body, respMeta, err := c.doRequestBytes(urlStr, opts)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 
 	var items []json.RawMessage
 	if len(body) == 0 {
-		return nil, nextPage, nil
+		return nil, respMeta, nil
 	}
 
 	if err := json.Unmarshal(body, &items); err != nil {
-		return nil, "", fmt.Errorf("unmarshaling json array from %s: %w", urlStr, err)
+		return nil, nil, fmt.Errorf("unmarshaling json array from %s: %w", urlStr, err)
 	}
 
-	return items, nextPage, nil
+	return items, respMeta, nil
 }
 
 // DoRequestSingle makes a GET request to the given GitHub API URL and expects a single JSON object.
-// It handles authentication, rate limit sleeps, and returns the raw JSON.
-func (c *Client) DoRequestSingle(urlStr string) (json.RawMessage, error) {
-	body, _, err := c.doRequestBytes(urlStr)
+// It handles authentication, rate limit sleeps, and returns the raw JSON and response metadata.
+func (c *Client) DoRequestSingle(urlStr string, opts *RequestOptions) (json.RawMessage, *Response, error) {
+	body, respMeta, err := c.doRequestBytes(urlStr, opts)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if len(body) == 0 {
-		return nil, nil
+		return nil, respMeta, nil
 	}
 
 	var item json.RawMessage
 	if err := json.Unmarshal(body, &item); err != nil {
-		return nil, fmt.Errorf("unmarshaling single json object from %s: %w", urlStr, err)
+		return nil, nil, fmt.Errorf("unmarshaling single json object from %s: %w", urlStr, err)
 	}
 
-	return item, nil
+	return item, respMeta, nil
 }
 
-func (c *Client) doRequestBytes(urlStr string) ([]byte, string, error) {
+func (c *Client) doRequestBytes(urlStr string, opts *RequestOptions) ([]byte, *Response, error) {
 	var resp *http.Response
 
 	retryCount := 0
 	for resp == nil {
 		var err error
-		resp, retryCount, err = c.oneRequest(urlStr, retryCount)
+		resp, retryCount, err = c.oneRequest(urlStr, opts, retryCount)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, err
 		}
+	}
+
+	respMeta := &Response{
+		ETag: resp.Header.Get("ETag"),
+	}
+
+	if resp.StatusCode == http.StatusNotModified {
+		resp.Body.Close()
+		respMeta.NotModified = true
+		return nil, respMeta, nil
 	}
 
 	// Handle other HTTP failures
@@ -145,26 +167,26 @@ func (c *Client) doRequestBytes(urlStr string) ([]byte, string, error) {
 			apiErr.Message = msg
 		}
 
-		return nil, "", apiErr
+		return nil, nil, apiErr
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		return nil, "", fmt.Errorf("reading response body from %s: %w", urlStr, err)
+		return nil, nil, fmt.Errorf("reading response body from %s: %w", urlStr, err)
 	}
 
-	nextPage := extractNextPageURL(resp.Header.Get("Link"))
+	respMeta.NextURL = extractNextPageURL(resp.Header.Get("Link"))
 
-	return body, nextPage, nil
+	return body, respMeta, nil
 }
 
 // oneRequest performs a single attempt at an HTTP request.
 //
-// If the request succeeds or has a permanent HTTP failure, this
-// returns (resp, 0, nil). This includes 200 OK, 4xx errors (like 401
-// or 404), and 5xx errors that have exhausted their max retries. The
-// caller is responsible for closing the response body.
+// If the request succeeds (including 304 Not Modified) or has a permanent
+// HTTP failure, this returns (resp, 0, nil). This includes 200 OK, 4xx errors
+// (like 401 or 404), and 5xx errors that have exhausted their max retries.
+// The caller is responsible for closing the response body.
 //
 // If the request encounters a retryable transient error or reaches a
 // rate limit, this returns (nil, updatedRetryCount, nil). The method
@@ -175,7 +197,7 @@ func (c *Client) doRequestBytes(urlStr string) ([]byte, string, error) {
 // Finally, (nil, 0, err) indicates a failure to even initiate the
 // request (e.g., malformed URL) or a network error after retries are
 // exhausted.
-func (c *Client) oneRequest(urlStr string, retryCount int) (*http.Response, int, error) {
+func (c *Client) oneRequest(urlStr string, opts *RequestOptions, retryCount int) (*http.Response, int, error) {
 	const maxRetries = 5
 
 	req, err := http.NewRequest("GET", urlStr, nil)
@@ -187,6 +209,9 @@ func (c *Client) oneRequest(urlStr string, retryCount int) (*http.Response, int,
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	if opts != nil && opts.ETag != "" {
+		req.Header.Set("If-None-Match", opts.ETag)
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -243,7 +268,7 @@ func (c *Client) oneRequest(urlStr string, retryCount int) (*http.Response, int,
 	}
 
 	// If we reach here, it's not a rate limit sleep, and not a retriable transient error.
-	// It could be a 200 OK, a 404, an auth error, or a 5xx that hit the retry limit.
+	// It could be a 200 OK, a 304 Not Modified, a 404, an auth error, or a 5xx that hit the retry limit.
 	return resp, 0, nil
 }
 
