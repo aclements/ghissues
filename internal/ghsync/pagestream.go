@@ -149,6 +149,9 @@ func (ps *pageStream) fetchNext(st *streamState) error {
 		} else {
 			st.NextURL = fresh
 		}
+	} else {
+		// No next page and no way to synthesize a fresh start URL.
+		ps.done(st)
 	}
 
 	return nil

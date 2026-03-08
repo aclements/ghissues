@@ -12,12 +12,12 @@ After each step, STOP to allow human review. DO NOT proceed to the next step unt
 *   Update `fetchNext` to accept a pointer to the relevant `streamState` and update it directly, ensuring consistency between loop iterations and resumptions.
 *   This refactoring will change the format of `sync_state.json`.
 
-## 2. Implement Basic Sync Tests
+## 2. Implement Basic Sync Tests [COMPLETED]
 *   Implement a simple test HTTP server that responds to the requests used by the syncer based on a minimal in-memory corpus of issues, comments, and events. You will be implementing tests using this test server, the `httptest` package, and overriding the `github.Client.Transport` to redirect all requests to the test server. This test server should include a method that checks that an on-disk mirror directory matches its in-memory state.
 *   Write a "smoke test" that tests the basic functionality of the syncer. Run of the syncer and make sure the output is as expected. Then, to make sure updates work, run the syncer again with no changes, check the output, then add to the test server's issues, comments, and events, run the syncer once more and check for the expected output.
 *   Run this test and make sure it passes.
 
-## 3. Implement Sync Resume Tests
+## 3. Implement Sync Resume Tests [COMPLETED]
 *   Using the test server you implemented in step 2, we're going to test sync resume logic by injecting HTTP errors that cause the sync loop to abort. Add a `resumeTest` flag to the test server that causes it to track all of the request URLs it's seen. If it gets a new request URL, it responds to that as usual but sets a `failNext` flag. If the `failNext` flag is set, it responds with a non-transient HTTP error.
 *   Using the same test server corpus as the smoke test, enable `resumeTest` mode and run the syncer in a loop. After each return of the syncer, clear the `failNext` flag. Once the syncer completes without failing, check that the on-disk mirror is correct and complete.
 

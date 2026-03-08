@@ -137,10 +137,10 @@ func (s *syncer) sync() (bool, error) {
 		},
 	}
 
-	if state.Events.NextURL == "" && state.Events.Newest.IsZero() {
-		// The events stream does not support restarting via since. If we have no next URL
-		// and we haven't seen any newest events (implying this is a completely fresh stream),
-		// initialize it.
+	if state.Events.NextURL == "" {
+		// The events stream does not support restarting via since. If we have no next URL,
+		// initialize it to the first page. We use state.Events.StopTime to stop once we
+		// reach events we've already processed.
 		state.Events.NextURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/events?per_page=100", s.owner, s.repo)
 	}
 	eventsStream := &pageStream{
@@ -175,19 +175,22 @@ func (s *syncer) sync() (bool, error) {
 		if err := issuesStream.fetchNext(&state.Issues); err != nil {
 			return false, fmt.Errorf("syncing issues: %w", err)
 		}
+		if err := saveState(s.baseDir, state); err != nil {
+			return false, fmt.Errorf("saving issues state: %w", err)
+		}
 
 		if err := commentsStream.fetchNext(&state.Comments); err != nil {
 			return false, fmt.Errorf("syncing comments: %w", err)
+		}
+		if err := saveState(s.baseDir, state); err != nil {
+			return false, fmt.Errorf("saving comments state: %w", err)
 		}
 
 		if err := eventsStream.fetchNext(&state.Events); err != nil {
 			return false, fmt.Errorf("syncing events: %w", err)
 		}
-
-		if anyChanges() {
-			if err := saveState(s.baseDir, state); err != nil {
-				return false, fmt.Errorf("saving state: %w", err)
-			}
+		if err := saveState(s.baseDir, state); err != nil {
+			return false, fmt.Errorf("saving events state: %w", err)
 		}
 	}
 
