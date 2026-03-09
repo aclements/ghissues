@@ -82,25 +82,21 @@ func TestPageStream(t *testing.T) {
 	if !ps.active(st) {
 		t.Fatal("expected stream to be active")
 	}
-	if err := ps.fetchNext(st); err != nil {
+	if madeChange, err := ps.fetchNext(st); err != nil {
 		t.Fatal(err)
-	}
-	if !ps.madeChange {
+	} else if !madeChange {
 		t.Error("expected madeChange=true")
 	}
-	ps.madeChange = false
 	if st.Newest != t1 {
 		t.Errorf("expected newest %v, got %v", t1, st.Newest)
 	}
 
 	// Fetch second page
-	if err := ps.fetchNext(st); err != nil {
+	if madeChange, err := ps.fetchNext(st); err != nil {
 		t.Fatal(err)
-	}
-	if !ps.madeChange {
+	} else if !madeChange {
 		t.Error("expected madeChange=true")
 	}
-	ps.madeChange = false
 	if st.Newest != t2 {
 		t.Errorf("expected newest %v, got %v", t2, st.Newest)
 	}
@@ -115,10 +111,9 @@ func TestPageStream(t *testing.T) {
 	if !ps.active(st) {
 		t.Fatal("expected stream to be active for restart")
 	}
-	if err := ps.fetchNext(st); err != nil {
+	if madeChange, err := ps.fetchNext(st); err != nil {
 		t.Fatal(err)
-	}
-	if ps.madeChange {
+	} else if madeChange {
 		t.Error("expected madeChange=false for empty page")
 	}
 	if ps.active(st) {
@@ -126,10 +121,9 @@ func TestPageStream(t *testing.T) {
 	}
 
 	// Try one more following restart.
-	if err := ps.fetchNext(st); err != nil {
+	if madeChange, err := ps.fetchNext(st); err != nil {
 		t.Fatal(err)
-	}
-	if ps.madeChange {
+	} else if madeChange {
 		t.Error("expected madeChange=false for empty page")
 	}
 	if ps.active(st) {
@@ -174,14 +168,15 @@ func TestPageStream_StopTime(t *testing.T) {
 		StopTime: stopTime,
 	}
 	ps := &pageStream{
-		client: client,
+		client:       client,
+		isDescending: true,
 		pathFunc: func(meta *metadata) (string, error) {
 			num, _ := meta.issueNumber()
 			return filepath.Join(dir, fmt.Sprintf("%d.json", num)), nil
 		},
 	}
 
-	if err := ps.fetchNext(st); err != nil {
+	if _, err := ps.fetchNext(st); err != nil {
 		t.Fatal(err)
 	}
 
@@ -238,11 +233,9 @@ func TestPageStream_IdenticalContents(t *testing.T) {
 		pathFunc: pathFunc,
 	}
 
-	if err := ps.fetchNext(st); err != nil {
+	if madeChange, err := ps.fetchNext(st); err != nil {
 		t.Fatal(err)
-	}
-
-	if ps.madeChange {
+	} else if madeChange {
 		t.Error("expected madeChange=false because contents were identical")
 	}
 }

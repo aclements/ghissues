@@ -63,6 +63,13 @@ type mockServer struct {
 	// maxFetches is a limit on fetches to prevent infinite loops.
 	maxFetches int
 
+	// forceBackfill causes the repo-wide issue events endpoint to return an
+	// empty list, forcing a backfill from the per-issue events endpoints.
+	forceBackfill bool
+
+	// servedIssueEvents is set if the server served a request for issue events.
+	servedIssueEvents bool
+
 	// testResume enables "resumption testing" mode, where the first time the
 	// server gets a request for a new URL, it will set failAll to enter failure
 	// mode, which causes it to respond to this and all further requests with
@@ -175,7 +182,25 @@ func (s *mockServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		resp, hasMore = filterAndPage(s.Events, since, page, direction, func(e mockEvent) time.Time { return e.CreatedAt })
+		events := s.Events
+		if s.forceBackfill {
+			events = nil
+		}
+		resp, hasMore = filterAndPage(events, since, page, direction, func(e mockEvent) time.Time { return e.CreatedAt })
+	} else if strings.HasSuffix(path, "/events") && strings.Contains(path, "/issues/") {
+		s.servedIssueEvents = true
+		parts := strings.Split(path, "/")
+		issueNumStr := parts[len(parts)-2]
+		var issueNum int
+		fmt.Sscanf(issueNumStr, "%d", &issueNum)
+
+		var issueEvents []mockEvent
+		for _, e := range s.Events {
+			if e.Issue != nil && e.Issue.Number == issueNum {
+				issueEvents = append(issueEvents, e)
+			}
+		}
+		resp, hasMore = filterAndPage(issueEvents, since, page, "asc", func(e mockEvent) time.Time { return e.CreatedAt })
 	} else if strings.Contains(path, "/issues") {
 		resp, hasMore = filterAndPage(s.Issues, since, page, direction, func(i mockIssue) time.Time { return i.UpdatedAt })
 	} else {

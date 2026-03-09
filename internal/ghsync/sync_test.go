@@ -58,8 +58,15 @@ func TestSyncBasic(t *testing.T) {
 		t.Fatalf("Sync failed: %v", err)
 	}
 	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+	// Check that sync attempted backfill. The initial sync also tests events
+	// that appear in both the repo-wide stream and the per-issue stream.
+	if !ms.servedIssueEvents {
+		t.Errorf("expected issue events requests")
+	}
+	ms.servedIssueEvents = false
 
-	// 2. Sync again with no changes
+	// 2. Sync again with no changes. Check that there are no spurious changes
+	// to sync_state.json.
 	statePath := filepath.Join(rootDir, "owner", "repo", "sync_state.json")
 	beforeState, err := os.ReadFile(statePath)
 	if err != nil {
@@ -80,6 +87,11 @@ func TestSyncBasic(t *testing.T) {
 
 	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
 
+	if ms.servedIssueEvents {
+		t.Errorf("unexpected issue events requests")
+	}
+	ms.servedIssueEvents = false
+
 	// 3. Add to corpus
 	ms.addIssues(1)
 	ms.addComments(1, 2)
@@ -90,6 +102,12 @@ func TestSyncBasic(t *testing.T) {
 		t.Fatalf("Sync (with changes) failed: %v", err)
 	}
 	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+
+	// This time there should be no backfill attempt.
+	if ms.servedIssueEvents {
+		t.Errorf("unexpected issue events requests")
+	}
+	ms.servedIssueEvents = false
 }
 
 func TestSyncResume(t *testing.T) {
@@ -111,12 +129,12 @@ func TestSyncResume(t *testing.T) {
 
 	// Loop until sync completes without error
 	tries := 0
-	maxRetries := 20
+	maxRetries := 100
 	success := false
 	for ; tries < maxRetries; tries++ {
 		err := Sync(client, "owner", "repo", rootDir, r)
 
-		const maxFetchesPer = 3
+		const maxFetchesPer = 4
 		if ms.fetches > maxFetchesPer {
 			// Make sure we're not just starting over from scratch each time and
 			// getting a little further.
@@ -168,5 +186,31 @@ func TestSyncUpdate(t *testing.T) {
 	if err := Sync(client, "owner", "repo", rootDir, r); err != nil {
 		t.Fatalf("Sync (with updates) failed: %v", err)
 	}
+	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+}
+
+func TestSyncBackfillBasic(t *testing.T) {
+	ms := newMockServer(t)
+
+	// Add two issues
+	ms.addIssues(2)
+	// Add events to both
+	ms.addEvents(21, 1)
+	ms.addEvents(21, 2)
+
+	// Hide the repo-wide events to force backfill.
+	ms.forceBackfill = true
+
+	client := ms.Client(t)
+	rootDir := t.TempDir()
+
+	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+	if !ms.servedIssueEvents {
+		t.Errorf("backfill did not happen")
+	}
+
+	// Verify that the event was fetched despite being missing from the firehose.
 	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
 }

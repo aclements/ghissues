@@ -21,12 +21,12 @@ After each step, STOP to allow human review. DO NOT proceed to the next step unt
 *   Using the test server you implemented in step 2, we're going to test sync resume logic by injecting HTTP errors that cause the sync loop to abort. Add a `resumeTest` flag to the test server that causes it to track all of the request URLs it's seen. If it gets a new request URL, it responds to that as usual but sets a `failNext` flag. If the `failNext` flag is set, it responds with a non-transient HTTP error.
 *   Using the same test server corpus as the smoke test, enable `resumeTest` mode and run the syncer in a loop. After each return of the syncer, clear the `failNext` flag. Once the syncer completes without failing, check that the on-disk mirror is correct and complete.
 
-## 4. Backfill State & Gap Detection
+## 4. Backfill State & Gap Detection [COMPLETED]
 *   Modify `internal/ghsync/state.go` to add a `Backfill` state struct to the global `state`. 
 *   The `Backfill` struct should track the ongoing backfill process: `CurrentIssue int`, and a `Stream streamState` to handle the pagination of the per-issue event list.
 *   Update the event synchronization logic: if the event stream naturally exhausts (hits the API limit, meaning no next URL) without having stopped due to reaching an event older than the stop time, we have a gap. When this gap is detected, initialize the `Backfill` state to begin backfilling.
 
-## 5. Event Backfill Stream Implementation
+## 5. Event Backfill Stream Implementation [COMPLETED]
 *   Create a mechanism (e.g., a `backfillStream` struct or a new method on `syncer`) that integrates directly into the main interleaved `sync` loop in `sync.go`.
 *   While `state.Backfill.CurrentIssue` indicates an active backfill process:
     *   Use the `state.Backfill.Stream` (which is a `streamState`) to manage pagination. If `NextURL` is empty, construct the per-issue events URL.
@@ -34,7 +34,7 @@ After each step, STOP to allow human review. DO NOT proceed to the next step unt
     *   When all pages for the issue are fetched (i.e. `Stream.NextURL` becomes empty after processing), update `state.Backfill.CurrentIssue` to the next issue and reset `state.Backfill.Stream`.
     *   If `200 OK`, process and save the events using the existing `{created_at}-event-{id}.json` format. Update `state.Backfill.Stream.NextURL`.
 
-## 6. Integration
+## 6. Integration [COMPLETED]
 *   Add the backfill processing step to the `for` loop in `sync.go` alongside issues, comments, and events. This ensures that backfill progress is continually saved to `sync_state.json` and perfectly resumable if interrupted.
 
 ## 7. GitHub Client Modifications [COMPLETED]

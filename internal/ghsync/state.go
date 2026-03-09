@@ -21,9 +21,10 @@ type state struct {
 	// Version is the schema version of this state file. Defaults to 2.
 	Version int `json:"version"`
 
-	Issues   streamState `json:"issues"`
-	Comments streamState `json:"comments"`
-	Events   streamState `json:"events"`
+	Issues   streamState   `json:"issues"`
+	Comments streamState   `json:"comments"`
+	Events   streamState   `json:"events"`
+	Backfill backfillState `json:"backfill,omitzero"`
 }
 
 // loadState reads the synchronization state from disk.

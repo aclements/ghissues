@@ -35,6 +35,10 @@ type syncer struct {
 	rootDir  string
 	baseDir  string
 	reporter Reporter
+
+	state *state
+
+	madeChanges bool
 }
 
 type noopReporter struct{}
@@ -67,12 +71,18 @@ func Sync(client *github.Client, owner, repo, rootDir string, reporter Reporter)
 		reporter: reporter,
 	}
 
-	madeChanges, err := s.sync()
+	state, err := loadState(s.baseDir)
+	if err != nil {
+		return fmt.Errorf("loading state: %w", err)
+	}
+	s.state = state
+
+	err = s.sync()
 	if err != nil {
 		return err
 	}
 
-	if !madeChanges {
+	if !s.madeChanges {
 		s.reporter.Logf("No updates found for %s/%s.\n", owner, repo)
 		return nil
 	}
@@ -85,48 +95,54 @@ func Sync(client *github.Client, owner, repo, rootDir string, reporter Reporter)
 	return nil
 }
 
-// sync performs the incremental synchronization.
-func (s *syncer) sync() (bool, error) {
-	state, err := loadState(s.baseDir)
-	if err != nil {
-		return false, fmt.Errorf("loading state: %w", err)
+type syncStream[State any] interface {
+	active(*State) bool
+	fetchNext(*State) (bool, error)
+}
+
+func syncOneStream[State any](s *syncer, name string, stream syncStream[State], streamState *State) error {
+	if !stream.active(streamState) {
+		return nil
 	}
 
+	syncMsg := fmt.Sprintf("Syncing %s/%s %s", s.owner, s.repo, name)
+	s.reporter.Progress(syncMsg)
+
+	syncStatus := "failed"
+	defer func() {
+		if syncStatus != "done" {
+			s.reporter.ProgressDone(syncMsg, syncStatus)
+		}
+	}()
+
+	for stream.active(streamState) {
+		s.reporter.Progress(syncMsg)
+
+		madeChange, err := stream.fetchNext(streamState)
+		s.madeChanges = s.madeChanges || madeChange
+		err2 := saveState(s.baseDir, s.state)
+		if err != nil {
+			return fmt.Errorf("syncing %s: %w", name, err)
+		}
+		if err2 != nil {
+			return fmt.Errorf("saving %s state: %w", name, err2)
+		}
+	}
+
+	syncStatus = "done"
+	s.reporter.ProgressDone(syncMsg, syncStatus)
+	return nil
+}
+
+// sync performs the incremental synchronization.
+func (s *syncer) sync() error {
+	state := s.state
 	if state.Version == 0 {
 		// Initialize to version 2
 		state.Version = 2
 	}
 	if state.Version != 2 {
-		return false, fmt.Errorf("state file version %d is not supported version 2", state.Version)
-	}
-
-	madeChanges := false
-	runLoop := func(name string, stream *pageStream, streamState *streamState) error {
-		syncMsg := fmt.Sprintf("Syncing %s/%s %s", s.owner, s.repo, name)
-		s.reporter.Progress(syncMsg)
-
-		syncStatus := "failed"
-		defer func() {
-			if syncStatus != "done" {
-				s.reporter.ProgressDone(syncMsg, syncStatus)
-			}
-		}()
-
-		for stream.active(streamState) {
-			s.reporter.Progress(syncMsg)
-
-			if err := stream.fetchNext(streamState); err != nil {
-				return fmt.Errorf("syncing %s: %w", name, err)
-			}
-			if err := saveState(s.baseDir, state); err != nil {
-				return fmt.Errorf("saving %s state: %w", name, err)
-			}
-		}
-
-		syncStatus = "done"
-		s.reporter.ProgressDone(syncMsg, syncStatus)
-		madeChanges = madeChanges || stream.madeChange
-		return nil
+		return fmt.Errorf("state file version %d is not supported version 2", state.Version)
 	}
 
 	// Sync issues
@@ -147,8 +163,8 @@ func (s *syncer) sync() (bool, error) {
 			return urlStr
 		},
 	}
-	if err := runLoop("issues", issuesStream, &state.Issues); err != nil {
-		return false, err
+	if err := syncOneStream(s, "issues", issuesStream, &state.Issues); err != nil {
+		return err
 	}
 
 	// Sync comments
@@ -170,8 +186,8 @@ func (s *syncer) sync() (bool, error) {
 			return urlStr
 		},
 	}
-	if err := runLoop("comments", commentsStream, &state.Comments); err != nil {
-		return false, err
+	if err := syncOneStream(s, "comments", commentsStream, &state.Comments); err != nil {
+		return err
 	}
 
 	// Sync events
@@ -182,7 +198,8 @@ func (s *syncer) sync() (bool, error) {
 		state.Events.NextURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/events?per_page=100", s.owner, s.repo)
 	}
 	eventsStream := &pageStream{
-		client: s.client,
+		client:       s.client,
+		isDescending: true,
 		pathFunc: func(meta *metadata) (string, error) {
 			issueNum, err := meta.issueNumber()
 			if err != nil {
@@ -192,9 +209,28 @@ func (s *syncer) sync() (bool, error) {
 			return filepath.Join(s.baseDir, "issues", fmt.Sprintf("%d", issueNum), fmt.Sprintf("%s-event-%d.json", timeStr, meta.ID)), nil
 		},
 	}
-	if err := runLoop("events", eventsStream, &state.Events); err != nil {
-		return false, err
+	if err := syncOneStream(s, "events", eventsStream, &state.Events); err != nil {
+		return err
 	}
 
-	return madeChanges, nil
+	// If we exhausted the event stream, start the backfill sync
+	backfill := &backfillStream{
+		client:  s.client,
+		owner:   s.owner,
+		repo:    s.repo,
+		baseDir: s.baseDir,
+	}
+	if !eventsStream.hitStop && !backfill.active(&state.Backfill) {
+		s.reporter.Logf("reached end of repo events stream; starting per-issue event backfill")
+		if err := backfill.start(&state.Backfill); err != nil {
+			return fmt.Errorf("starting backfill: %w", err)
+		}
+	}
+
+	// Sync events backfill
+	if err := syncOneStream(s, "events backfill", backfill, &state.Backfill); err != nil {
+		return err
+	}
+
+	return nil
 }

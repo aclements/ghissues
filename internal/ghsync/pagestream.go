@@ -26,17 +26,38 @@ type streamState struct {
 	Newest time.Time `json:"newest,omitzero"`
 
 	// StopTime is the timestamp at which to stop fetching for descending
-	// streams. If non-zero, fetching stops when encountering an item older than this.
+	// streams. If isDescending is set, fetching stops when encountering an
+	// item older than this.
 	StopTime time.Time `json:"stop_time,omitzero"`
 }
 
+// pageStream manages fetching pages from a GitHub API stream.
+//
+// There are three categories of data streams:
+//
+// - Ascending streams (oldest first) with "since" filtering. For these, we
+// start the stream at the latest timestamp we've seen ([streamState.Newest])
+// and fetch as many pages from the stream as we can. pageStream updates Newest
+// as it goes, and at the end of the page stream, restarts at the new Newest.
+//
+// - Ascending streams (oldest first) with no time filtering. For these, we
+// always have to fetch the whole stream. ETag filtering is effective for this
+// type of stream, but generally we try to avoid using these streams.
+//
+// - Descending streams (newest first) with no filtering. For these, we start at
+// the beginning of the stream (we have no other choice) and fetch pages until
+// we see an object who's timestamp is >= [streamState.StopTime], or we reach
+// the end of the stream. Only at that point do we update [stream.StopTime] to
+// match [stream.Newest]. This has the effect of breaking the stream into
+// "segments", where we have to fetch a complete segment before we start back at
+// the beginning.
 type pageStream struct {
 	// client is the GitHub API client used to fetch pages.
 	client *github.Client
 
-	// madeChange is true if any item in this stream was newly created or
-	// updated on disk during this sync pass.
-	madeChange bool
+	// isDescending indicates that this is a descending stream, for which we
+	// should use and update StopTime.
+	isDescending bool
 
 	// pathFunc returns the full filesystem path where a given item should
 	// be stored. If it returns an error, the item is skipped.
@@ -46,6 +67,10 @@ type pageStream struct {
 	// passed newest, the timestamp of the newest item seen so far. When the
 	// stream is truly exhausted, fetchNext sets this to nil.
 	initURL func(since time.Time) string
+
+	// hitStop is set to true by fetchNext if the stream terminated early
+	// because it encountered an item older than the streamState's StopTime.
+	hitStop bool
 }
 
 func (ps *pageStream) active(st *streamState) bool {
@@ -55,37 +80,47 @@ func (ps *pageStream) active(st *streamState) bool {
 func (ps *pageStream) done(st *streamState) {
 	st.NextURL = ""
 	ps.initURL = nil
+
+	if ps.isDescending {
+		// This is a descending stream. We've caught up with our last "complete"
+		// sync, so the next sync can start back at the (new) beginning of the
+		// stream until it reaches where THIS sync started.
+		st.StopTime = st.Newest
+	}
 }
 
-// fetchNext retrieves a single page from the GitHub API and writes the items
-// to disk. It updates st.NextURL, st.Newest, and ps.madeChange.
-func (ps *pageStream) fetchNext(st *streamState) error {
+// fetchNext retrieves a single page from the GitHub API and writes the items to
+// disk. It updates st.NextURL and st.Newest. It returns whether any item in
+// this stream was newly created or updated on disk during this sync pass.
+func (ps *pageStream) fetchNext(st *streamState) (bool, error) {
 	if st.NextURL == "" {
 		if ps.initURL == nil {
-			return nil
+			return false, nil
 		}
 		st.NextURL = ps.initURL(st.Newest)
 	}
 
 	items, resp, err := ps.client.DoRequestList(st.NextURL, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if resp.NotModified {
+		// TODO: This is wrong for ascending streams.
 		ps.done(st)
-		return nil
+		return false, nil
 	}
 
 	if len(items) == 0 {
 		ps.done(st)
-		return nil
+		return false, nil
 	}
 
+	madeChange := false
 	for _, item := range items {
 		meta, err := parseMetadata(item)
 		if err != nil {
-			return fmt.Errorf("failed to parse metadata: %w", err)
+			return madeChange, fmt.Errorf("failed to parse metadata: %w", err)
 		}
 
 		if meta.UpdatedAt.After(st.Newest) {
@@ -95,22 +130,19 @@ func (ps *pageStream) fetchNext(st *streamState) error {
 			st.Newest = meta.CreatedAt
 		}
 
-		if !st.StopTime.IsZero() && !meta.CreatedAt.IsZero() && meta.CreatedAt.Before(st.StopTime) {
+		if ps.isDescending && !meta.CreatedAt.IsZero() && meta.CreatedAt.Before(st.StopTime) {
 			// For immutable descending streams (events), if the event is older
 			// than our last successful sync, we know we've caught up.
+			ps.hitStop = true
 			ps.done(st)
-			// We cleared the resumption URL, so the next sync will start back
-			// at the beginning of the descending stream. Record where it should
-			// stop.
-			st.StopTime = st.Newest
-			return nil
+			return madeChange, nil
 		}
 
 		path, err := ps.pathFunc(meta)
 		if err != nil {
 			// If we can't determine the path (e.g., missing issue number),
 			// skip this item.
-			return err
+			return madeChange, err
 		}
 		dir := filepath.Dir(path)
 
@@ -128,20 +160,19 @@ func (ps *pageStream) fetchNext(st *streamState) error {
 		}
 
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			return fmt.Errorf("creating directory %s: %w", dir, err)
+			return madeChange, fmt.Errorf("creating directory %s: %w", dir, err)
 		}
 
 		tmpPath := path + ".tmp"
 		if err := os.WriteFile(tmpPath, prettyJSON.Bytes(), 0644); err != nil {
-			return fmt.Errorf("writing temporary file %s: %w", tmpPath, err)
+			return madeChange, fmt.Errorf("writing temporary file %s: %w", tmpPath, err)
 		}
 
 		if err := os.Rename(tmpPath, path); err != nil {
 			os.Remove(tmpPath) // Best effort cleanup
-			return fmt.Errorf("renaming file %s: %w", path, err)
+			return madeChange, fmt.Errorf("renaming file %s: %w", path, err)
 		}
-
-		ps.madeChange = true
+		madeChange = true
 	}
 
 	if resp.NextURL != "" {
@@ -163,5 +194,5 @@ func (ps *pageStream) fetchNext(st *streamState) error {
 		ps.done(st)
 	}
 
-	return nil
+	return madeChange, nil
 }

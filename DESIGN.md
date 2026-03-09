@@ -71,8 +71,16 @@ automatically attempts to "stitch" the firehose. It synthesizes a brand
 new API request using the `since` parameter set to the timestamp of the
 newest item seen so far. If this fresh URL still results in zero items,
 then the stream is done. This allows the tool to seamlessly traverse an
-infinite number of items over time. The Events stream does not support
-the `since` parameter, so it cannot bypass the 30,000 item limit.
+infinite number of items over time.
+
+The Events stream does not support the `since` parameter, so it cannot
+bypass the 30,000 item limit directly. To handle this, `ghissues`
+employs a "Backfill" strategy: if the repository-wide events firehose
+exhausts without catching up to the previously synced state, the tool
+identifies a history gap and automatically transitions into an
+interleaved per-issue backfill process. This ensures 100% event fidelity
+by fetching events directly from each individual issue's endpoint
+(`/repos/.../issues/{number}/events`).
 
 ## 3. Sync Process
 
@@ -81,38 +89,50 @@ captured by the `state` type, which is saved to disk after every page fetch in
 order to safely handle interruptions. The sync loop maintains no state outside
 of the `state` type.
 
-There are two categories of data streams:
+There are three categories of data streams:
 
-- Ascending streams with "since" filtering (issues, comments). For these, we
-  start the stream at the latest timestamp we've seen and fetch as many pages
-  from the stream as we can.
+- Ascending streams (oldest first) with "since" filtering (issues, comments).
+  For these, we start the stream at the latest timestamp we've seen and fetch as
+  many pages from the stream as we can.
 
-- Descending streams with no filtering (events). For these, we start at the
-  beginning of the stream (we have no other choice) and fetch pages until we see
-  an object who's timestamp is past the last timestamp of a full stream or reach
-  the end of the stream. Only at that point do we update the full stream
-  timestamp. This has the effect of breaking the stream into "segments", where
-  we have to fetch a complete segment before we start back at the beginning.
+- Ascending streams (oldest first) with no time filtering (per-issue events).
+  For these, we always have to fetch the whole stream. ETag filtering is
+  effective for this type of stream, but generally we try to avoid using these
+  streams.
+
+- Descending streams (newest first) with no filtering (repo-wide events). For
+  these, we start at the beginning of the stream (we have no other choice) and
+  fetch pages until we see an object who's timestamp is past the last timestamp
+  of a full stream or reach the end of the stream. Only at that point do we
+  update the full stream timestamp. This has the effect of breaking the stream
+  into "segments", where we have to fetch a complete segment before we start
+  back at the beginning.
 
 The sync algorithm proceeds as follows:
 
 1.  **Read State:** Load `state` from `sync_state.json`.
-2.  **Sequential Fetching:** For each data stream (Issues, Comments, Events),
-    loop continuously until the stream is exhausted (no `NextURL` and no
-    initialization logic remaining):
+2.  **Sequential Fetching:** For each data stream (Issues, Comments,
+    Events, Backfill), loop continuously until the stream is exhausted
+    (no `NextURL` and no initialization logic remaining):
     *   Fetch 1 page of the current stream. For descending streams like
         Events, fetching stops early if an item is older than the stream's
         `StopTime`.
-    *   **Continuous State Saving:** The stream states are updated in
-        memory and saved to `sync_state.json` after *every* page.
+    *   The Backfill stream is a "2-D" stream indexed by (issue number, issue
+        events page). When it finishes the events stream for an issue, it moves
+        on to the next issue.
+    *   **Backfill Detection:** By default, the Backfill stream is empty. If the
+        Events stream exhausts without hitting its `StopTime`, this indicates a
+        gap and we initiate the Backfill stream.
+    *   **Continuous State Saving:** The stream state is updated in memory and
+        saved to `sync_state.json` after *every* page.
 3.  **Finalize & Commit:** Once all streams are exhausted, the tool
     runs `git add .` and `git commit`.
 
-### Unified resumption
+### Unified Resumption
 
 The synchronization state reflected in `sync_state.json` is the single
 source of truth for the entire process. Each data stream (Issues,
-Comments, Events) stores its full state in this object and each
+Comments, Events, and Backfill) stores its full state in this object and each
 iteration of the sync loop simply updates this single source of state.
 This means there's virtually no difference between resuming an
 interrupted sync and each iteration of the regular sync loop. This
