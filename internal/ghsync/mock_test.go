@@ -60,6 +60,9 @@ type mockServer struct {
 	// fetches counts successful fetches. The caller is allowed to reset this.
 	fetches int
 
+	// maxFetches is a limit on fetches to prevent infinite loops.
+	maxFetches int
+
 	// testResume enables "resumption testing" mode, where the first time the
 	// server gets a request for a new URL, it will set failAll to enter failure
 	// mode, which causes it to respond to this and all further requests with
@@ -72,9 +75,10 @@ type mockServer struct {
 
 func newMockServer(t *testing.T) *mockServer {
 	return &mockServer{
-		t:        t,
-		seenURLs: make(map[string]bool),
-		nextID:   1,
+		t:          t,
+		seenURLs:   make(map[string]bool),
+		nextID:     1,
+		maxFetches: 200,
 	}
 }
 
@@ -176,6 +180,12 @@ func (s *mockServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		resp, hasMore = filterAndPage(s.Issues, since, page, direction, func(i mockIssue) time.Time { return i.UpdatedAt })
 	} else {
 		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	if s.fetches >= s.maxFetches {
+		s.t.Errorf("max fetch limit (%d) reached; infinite loop?", s.maxFetches)
+		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 
