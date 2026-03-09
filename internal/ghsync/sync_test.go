@@ -12,6 +12,33 @@ import (
 	"time"
 )
 
+type testReporter struct {
+	t *testing.T
+
+	progress string
+}
+
+func (r *testReporter) Logf(format string, args ...any) {
+	r.t.Helper()
+	r.t.Logf(format, args...)
+}
+
+func (r *testReporter) Progress(msg string) {
+	r.t.Helper()
+	if r.progress == msg {
+		return
+	}
+	r.progress = msg
+	r.t.Log(msg)
+}
+
+// ProgressDone is called when a task is completed, indicating its final status.
+func (r *testReporter) ProgressDone(msg string, status string) {
+	r.t.Helper()
+	r.t.Logf("%s %s", msg, status)
+	r.progress = ""
+}
+
 func TestSyncBasic(t *testing.T) {
 	ms := newMockServer(t)
 
@@ -22,11 +49,12 @@ func TestSyncBasic(t *testing.T) {
 	ms.addEvents(49, 3)
 
 	client := ms.Client(t)
+	r := &testReporter{t: t}
 
 	rootDir := t.TempDir()
 
 	// 1. Initial sync
-	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
+	if err := Sync(client, "owner", "repo", rootDir, r); err != nil {
 		t.Fatalf("Sync failed: %v", err)
 	}
 	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
@@ -38,7 +66,7 @@ func TestSyncBasic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
+	if err := Sync(client, "owner", "repo", rootDir, r); err != nil {
 		t.Fatalf("Sync (no changes) failed: %v", err)
 	}
 
@@ -58,7 +86,7 @@ func TestSyncBasic(t *testing.T) {
 	ms.addEvents(1, 2)
 
 	// 4. Sync again and check
-	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
+	if err := Sync(client, "owner", "repo", rootDir, r); err != nil {
 		t.Fatalf("Sync (with changes) failed: %v", err)
 	}
 	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
@@ -77,6 +105,7 @@ func TestSyncResume(t *testing.T) {
 	ms.addEvents(49, 2)
 
 	client := ms.Client(t)
+	r := &testReporter{t: t}
 
 	rootDir := t.TempDir()
 
@@ -85,7 +114,7 @@ func TestSyncResume(t *testing.T) {
 	maxRetries := 20
 	success := false
 	for ; tries < maxRetries; tries++ {
-		err := Sync(client, "owner", "repo", rootDir, nil)
+		err := Sync(client, "owner", "repo", rootDir, r)
 
 		const maxFetchesPer = 3
 		if ms.fetches > maxFetchesPer {
@@ -119,11 +148,12 @@ func TestSyncUpdate(t *testing.T) {
 	ms.addComments(1, 1)
 
 	client := ms.Client(t)
+	r := &testReporter{t: t}
 
 	rootDir := t.TempDir()
 
 	// 1. Initial sync
-	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
+	if err := Sync(client, "owner", "repo", rootDir, r); err != nil {
 		t.Fatalf("Sync failed: %v", err)
 	}
 	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
@@ -135,7 +165,7 @@ func TestSyncUpdate(t *testing.T) {
 	ms.Comments[0].UpdatedAt = ms.Comments[0].UpdatedAt.Add(time.Hour)
 
 	// 3. Sync again
-	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
+	if err := Sync(client, "owner", "repo", rootDir, r); err != nil {
 		t.Fatalf("Sync (with updates) failed: %v", err)
 	}
 	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
