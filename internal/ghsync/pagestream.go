@@ -94,6 +94,10 @@ func (ps *pageStream) fetchNext(st *streamState) error {
 			// For immutable descending streams (events), if the event is older
 			// than our last successful sync, we know we've caught up.
 			ps.done(st)
+			// We cleared the resumption URL, so the next sync will start back
+			// at the beginning of the descending stream. Record where it should
+			// stop.
+			st.StopTime = st.Newest
 			return nil
 		}
 

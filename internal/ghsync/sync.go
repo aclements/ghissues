@@ -100,6 +100,36 @@ func (s *syncer) sync() (bool, error) {
 		return false, fmt.Errorf("state file version %d is not supported version 2", state.Version)
 	}
 
+	madeChanges := false
+	runLoop := func(name string, stream *pageStream, streamState *streamState) error {
+		syncMsg := fmt.Sprintf("Syncing %s/%s %s", s.owner, s.repo, name)
+		s.reporter.Progress(syncMsg)
+
+		syncStatus := "failed"
+		defer func() {
+			if syncStatus != "done" {
+				s.reporter.ProgressDone(syncMsg, syncStatus)
+			}
+		}()
+
+		for stream.active(streamState) {
+			s.reporter.Progress(syncMsg)
+
+			if err := stream.fetchNext(streamState); err != nil {
+				return fmt.Errorf("syncing %s: %w", name, err)
+			}
+			if err := saveState(s.baseDir, state); err != nil {
+				return fmt.Errorf("saving %s state: %w", name, err)
+			}
+		}
+
+		syncStatus = "done"
+		s.reporter.ProgressDone(syncMsg, syncStatus)
+		madeChanges = madeChanges || stream.madeChange
+		return nil
+	}
+
+	// Sync issues
 	issuesStream := &pageStream{
 		client: s.client,
 		pathFunc: func(meta *metadata) (string, error) {
@@ -117,7 +147,11 @@ func (s *syncer) sync() (bool, error) {
 			return urlStr
 		},
 	}
+	if err := runLoop("issues", issuesStream, &state.Issues); err != nil {
+		return false, err
+	}
 
+	// Sync comments
 	commentsStream := &pageStream{
 		client: s.client,
 		pathFunc: func(meta *metadata) (string, error) {
@@ -136,7 +170,11 @@ func (s *syncer) sync() (bool, error) {
 			return urlStr
 		},
 	}
+	if err := runLoop("comments", commentsStream, &state.Comments); err != nil {
+		return false, err
+	}
 
+	// Sync events
 	if state.Events.NextURL == "" {
 		// The events stream does not support restarting via since. If we have no next URL,
 		// initialize it to the first page. We use state.Events.StopTime to stop once we
@@ -154,56 +192,9 @@ func (s *syncer) sync() (bool, error) {
 			return filepath.Join(s.baseDir, "issues", fmt.Sprintf("%d", issueNum), fmt.Sprintf("%s-event-%d.json", timeStr, meta.ID)), nil
 		},
 	}
-
-	anyChanges := func() bool {
-		return issuesStream.madeChange || commentsStream.madeChange || eventsStream.madeChange
+	if err := runLoop("events", eventsStream, &state.Events); err != nil {
+		return false, err
 	}
 
-	syncMsg := fmt.Sprintf("Syncing %s/%s", s.owner, s.repo)
-	s.reporter.Progress(syncMsg)
-
-	syncState := "failed"
-	defer func() {
-		if syncState != "done" {
-			s.reporter.ProgressDone(syncMsg, syncState)
-		}
-	}()
-
-	for issuesStream.active(&state.Issues) || commentsStream.active(&state.Comments) || eventsStream.active(&state.Events) {
-		s.reporter.Progress(syncMsg)
-
-		if err := issuesStream.fetchNext(&state.Issues); err != nil {
-			return false, fmt.Errorf("syncing issues: %w", err)
-		}
-		if err := saveState(s.baseDir, state); err != nil {
-			return false, fmt.Errorf("saving issues state: %w", err)
-		}
-
-		if err := commentsStream.fetchNext(&state.Comments); err != nil {
-			return false, fmt.Errorf("syncing comments: %w", err)
-		}
-		if err := saveState(s.baseDir, state); err != nil {
-			return false, fmt.Errorf("saving comments state: %w", err)
-		}
-
-		if err := eventsStream.fetchNext(&state.Events); err != nil {
-			return false, fmt.Errorf("syncing events: %w", err)
-		}
-		if err := saveState(s.baseDir, state); err != nil {
-			return false, fmt.Errorf("saving events state: %w", err)
-		}
-	}
-
-	if anyChanges() {
-		// Prepare StopTime for the next run.
-		state.Events.StopTime = state.Events.Newest
-
-		if err := saveState(s.baseDir, state); err != nil {
-			return false, fmt.Errorf("saving final state: %w", err)
-		}
-	}
-
-	syncState = "done"
-	s.reporter.ProgressDone(syncMsg, "done")
-	return anyChanges(), nil
+	return madeChanges, nil
 }
