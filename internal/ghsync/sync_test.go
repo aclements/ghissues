@@ -271,3 +271,77 @@ func TestSyncBackfillETag(t *testing.T) {
 		t.Fatalf("expected 1 new backfill fetch and 2 etags hits, but got %d fetches and %d etags hits", ms.issueEventsFetches, ms.etagFetches)
 	}
 }
+
+func TestSyncBackfillFullPage(t *testing.T) {
+	setTestPerPage(t, 10)
+	ms := newMockServer(t)
+
+	// Add an issue and exactly 2 full pages of events (20 events)
+	ms.addIssues(1)
+	ms.addEvents(20, 1)
+
+	ms.forceBackfill = true
+
+	client := ms.Client(t)
+	rootDir := t.TempDir()
+
+	// Initial sync
+	t.Log("initial sync")
+	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
+		t.Fatalf("First sync failed: %v", err)
+	}
+	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+	// We expect 2 pages to be fetched.
+	// Page 1: 10 items, hasMore=true, returns Link to page 2.
+	// Page 2: 10 items, hasMore=false, returns no Link.
+	if ms.issueEventsFetches != 2 {
+		t.Fatalf("got %d issue event fetches, but expected 2 pages", ms.issueEventsFetches)
+	}
+
+	// Second sync, no changes.
+	// Page 1: Cached ETag. returns 304. Link to Page 2.
+	// Page 2: ETag was NOT cached because it was a full page with no Link. Unconditional fetch.
+	//         Returns 10 items, no Link.
+	t.Log("sync with no changes")
+	ms.issueEventsFetches = 0
+	ms.etagFetches = 0
+	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
+		t.Fatalf("Second sync failed: %v", err)
+	}
+	// 1 unconditional fetch (page 2), 1 etag hit (page 1)
+	if ms.issueEventsFetches != 1 || ms.etagFetches != 1 {
+		t.Fatalf("expected 1 new backfill fetch and 1 etags hits, but got %d fetches and %d etags hits", ms.issueEventsFetches, ms.etagFetches)
+	}
+
+	// Add a new event (total 21). This falls onto page 3.
+	t.Log("sync with new event")
+	ms.issueEventsFetches = 0
+	ms.etagFetches = 0
+	ms.addEvents(1, 1) // adding one more event to issue 1
+	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
+		t.Fatalf("Third sync failed: %v", err)
+	}
+	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+
+	// Page 1: ETag hit (304). Link to page 2.
+	// Page 2: ETag NOT cached. Unconditional fetch. Returns 10 items. hasMore=true (end=20 < 21). Link to page 3.
+	// Page 3: Unconditional fetch. Returns 1 item. hasMore=false. ETag IS cached (1 item < 10).
+	if ms.issueEventsFetches != 2 || ms.etagFetches != 1 {
+		t.Fatalf("expected 2 new backfill fetch and 1 etags hits, but got %d fetches and %d etags hits", ms.issueEventsFetches, ms.etagFetches)
+	}
+
+	// Fourth sync, no changes.
+	// Page 1: ETag hit. Link to Page 2.
+	// Page 2: ETag hit. Link to Page 3. (Because page 2 returned Link last time, we DID cache its ETag).
+	// Page 3: ETag hit. No link.
+	t.Log("fourth sync with no changes")
+	ms.issueEventsFetches = 0
+	ms.etagFetches = 0
+	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
+		t.Fatalf("Fourth sync failed: %v", err)
+	}
+	if ms.issueEventsFetches != 0 || ms.etagFetches != 3 {
+		t.Fatalf("expected 0 new backfill fetches and 3 etags hits, but got %d fetches and %d etags hits", ms.issueEventsFetches, ms.etagFetches)
+	}
+}
+

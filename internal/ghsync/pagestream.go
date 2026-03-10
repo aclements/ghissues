@@ -8,8 +8,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/aclements/ghissues/internal/github"
@@ -188,7 +190,35 @@ func (ps *pageStream) fetchNext(st *streamState) (bool, error) {
 
 	// Now that we've written all items, update the cached ETag.
 	if st.cache != nil {
-		st.cache.putETag(reqURL, resp.ETag, resp.NextURL)
+		// If this is the last page and it might be full, do not cache its ETag.
+		// ETags generally cover the response body but not headers like Link.
+		// If the last page has exactly per_page items, and more items are
+		// added later, fetching it again with the same ETag would return a
+		// 304 Not Modified. This would cause us to miss the new Link header
+		// pointing to the next page. By skipping the ETag cache here, we
+		// force a re-fetch to ensure we don't miss new pages.
+		cacheETag := true
+		if resp.NextURL == "" && len(items) > 0 {
+			pageSize := -1
+			if u, err := url.Parse(reqURL); err == nil {
+				if q := u.Query().Get("per_page"); q != "" {
+					if p, err := strconv.Atoi(q); err == nil {
+						pageSize = p
+					}
+				}
+			}
+			// If we cannot determine the page size (pageSize < 0),
+			// conservatively assume it might be full.
+			if pageSize < 0 || len(items) >= pageSize {
+				cacheETag = false
+			}
+		}
+
+		if cacheETag {
+			st.cache.putETag(reqURL, resp.ETag, resp.NextURL)
+		} else {
+			st.cache.putETag(reqURL, "", "")
+		}
 	}
 
 	if len(items) == 0 {
