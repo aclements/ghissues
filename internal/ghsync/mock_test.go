@@ -5,6 +5,7 @@
 package ghsync
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -57,8 +58,13 @@ type mockServer struct {
 	// nextID is for generating object IDs
 	nextID int64
 
-	// fetches counts successful fetches. The caller is allowed to reset this.
+	// fetches counts successful fetches, not including NotModified resposes.
+	// The caller is allowed to reset this.
 	fetches int
+	// etagFetches counts NotModified fetches.
+	etagFetches int
+	// issueEventsFetches is the number of successful issue events fetches.
+	issueEventsFetches int
 
 	// maxFetches is a limit on fetches to prevent infinite loops.
 	maxFetches int
@@ -66,9 +72,6 @@ type mockServer struct {
 	// forceBackfill causes the repo-wide issue events endpoint to return an
 	// empty list, forcing a backfill from the per-issue events endpoints.
 	forceBackfill bool
-
-	// servedIssueEvents is set if the server served a request for issue events.
-	servedIssueEvents bool
 
 	// testResume enables "resumption testing" mode, where the first time the
 	// server gets a request for a new URL, it will set failAll to enter failure
@@ -119,7 +122,6 @@ func newMockServer(t *testing.T) *mockServer {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		s.servedIssueEvents = true
 
 		var issueNum int
 		fmt.Sscanf(r.PathValue("issueNum"), "%d", &issueNum)
@@ -131,7 +133,9 @@ func newMockServer(t *testing.T) *mockServer {
 			}
 		}
 		resp, hasMore := filterAndPage(issueEvents, time.Time{}, page, "asc", func(e mockEvent) time.Time { return e.CreatedAt })
-		s.writeResponse(w, r, resp, hasMore, page)
+		if s.writeResponse(w, r, resp, hasMore, page) {
+			s.issueEventsFetches++
+		}
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/issues", func(w http.ResponseWriter, r *http.Request) {
 		page, since, direction, err := s.getParams(r, true)
@@ -250,14 +254,28 @@ func (s *mockServer) getParams(r *http.Request, canSince bool) (int, time.Time, 
 	return page, since, direction, nil
 }
 
-func (s *mockServer) writeResponse(w http.ResponseWriter, r *http.Request, resp any, hasMore bool, page int) {
+func (s *mockServer) writeResponse(w http.ResponseWriter, r *http.Request, resp any, hasMore bool, page int) bool {
 	if s.fetches >= s.maxFetches {
 		s.t.Errorf("max fetch limit (%d) reached; infinite loop?", s.maxFetches)
 		w.WriteHeader(http.StatusForbidden)
-		return
+		return false
+	}
+
+	body, err := json.Marshal(resp)
+	if err != nil {
+		s.t.Fatalf("failed to marshal response: %v", err)
+	}
+	etag := fmt.Sprintf(`"%x"`, sha256.Sum256(body))
+
+	if r.Header.Get("If-None-Match") == etag {
+		s.t.Log("  matched ETag")
+		w.WriteHeader(http.StatusNotModified)
+		s.etagFetches++
+		return false
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("ETag", etag)
 	if hasMore {
 		nextURL := *r.URL
 		nextURL.Scheme = "http"
@@ -274,8 +292,9 @@ func (s *mockServer) writeResponse(w http.ResponseWriter, r *http.Request, resp 
 		w.Header().Set("Link", fmt.Sprintf(`<%s>; rel="next"`, nextURL.String()))
 	}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
+	w.Write(body)
 	s.fetches++
+	return true
 }
 
 func filterAndPage[T any](data []T, since time.Time, page int, direction string, timestamp func(T) time.Time) ([]T, bool) {
@@ -368,7 +387,7 @@ func (s *mockServer) verifyDir(t *testing.T, dir string) {
 			return err
 		}
 
-		if relPath == "sync_state.json" {
+		if filepath.Base(relPath) == "sync_state.json" {
 			return nil
 		}
 

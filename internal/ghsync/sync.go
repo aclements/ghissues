@@ -120,7 +120,7 @@ func syncOneStream[State any](s *syncer, name string, stream syncStream[State], 
 
 		madeChange, err := stream.fetchNext(streamState)
 		s.madeChanges = s.madeChanges || madeChange
-		err2 := saveState(s.baseDir, s.state)
+		err2 := s.state.save()
 		if err != nil {
 			return fmt.Errorf("syncing %s: %w", name, err)
 		}
@@ -137,13 +137,6 @@ func syncOneStream[State any](s *syncer, name string, stream syncStream[State], 
 // sync performs the incremental synchronization.
 func (s *syncer) sync() error {
 	state := s.state
-	if state.Version == 0 {
-		// Initialize to version 2
-		state.Version = 2
-	}
-	if state.Version != 2 {
-		return fmt.Errorf("state file version %d is not supported version 2", state.Version)
-	}
 
 	// Sync issues
 	issuesStream := &pageStream{
@@ -215,10 +208,11 @@ func (s *syncer) sync() error {
 
 	// If we exhausted the event stream, start the backfill sync
 	backfill := &backfillStream{
-		client:  s.client,
-		owner:   s.owner,
-		repo:    s.repo,
-		baseDir: s.baseDir,
+		client:    s.client,
+		owner:     s.owner,
+		repo:      s.repo,
+		baseDir:   s.baseDir,
+		repoState: s.state,
 	}
 	if !eventsStream.hitStop && !backfill.active(&state.Backfill) {
 		s.reporter.Logf("reached end of repo events stream; starting per-issue event backfill")

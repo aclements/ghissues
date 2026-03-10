@@ -29,6 +29,9 @@ type streamState struct {
 	// streams. If isDescending is set, fetching stops when encountering an
 	// item older than this.
 	StopTime time.Time `json:"stop_time,omitzero"`
+
+	// cache provides access to cache metadata state.
+	cache etagCache `json:"-"`
 }
 
 // pageStream manages fetching pages from a GitHub API stream.
@@ -100,19 +103,24 @@ func (ps *pageStream) fetchNext(st *streamState) (bool, error) {
 		st.NextURL = ps.initURL(st.Newest)
 	}
 
-	items, resp, err := ps.client.DoRequestList(st.NextURL, nil)
+	reqURL := st.NextURL
+	var opts github.RequestOptions
+	var cachedLink string
+	if st.cache != nil {
+		opts.ETag, cachedLink = st.cache.getETag(reqURL)
+	}
+
+	items, resp, err := ps.client.DoRequestList(reqURL, &opts)
 	if err != nil {
 		return false, err
 	}
 
 	if resp.NotModified {
-		// TODO: This is wrong for ascending streams.
-		ps.done(st)
-		return false, nil
-	}
-
-	if len(items) == 0 {
-		ps.done(st)
+		if cachedLink == "" {
+			ps.done(st)
+		} else {
+			st.NextURL = cachedLink
+		}
 		return false, nil
 	}
 
@@ -173,6 +181,16 @@ func (ps *pageStream) fetchNext(st *streamState) (bool, error) {
 			return madeChange, fmt.Errorf("renaming file %s: %w", path, err)
 		}
 		madeChange = true
+	}
+
+	// Now that we've written all items, update the cached ETag.
+	if st.cache != nil {
+		st.cache.putETag(reqURL, resp.ETag, resp.NextURL)
+	}
+
+	if len(items) == 0 {
+		ps.done(st)
+		return false, nil
 	}
 
 	if resp.NextURL != "" {

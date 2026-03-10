@@ -31,6 +31,7 @@ type backfillStream struct {
 	baseDir string
 
 	pendingIssues []int // Not including the current issue.
+	repoState     *state
 	ps            *pageStream
 }
 
@@ -60,8 +61,13 @@ func (bs *backfillStream) nextIssue(st *backfillState) error {
 	st.CurrentIssue = issueNum
 
 	// Reset to the page stream of the new issue.
+	etagCache, err := bs.repoState.getIssueState(issueNum)
+	if err != nil {
+		return err
+	}
 	st.Stream = streamState{
 		NextURL: fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/events?per_page=100", bs.owner, bs.repo, issueNum),
+		cache:   etagCache,
 	}
 	return nil
 }
