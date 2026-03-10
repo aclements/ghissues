@@ -63,7 +63,7 @@ type pageStream struct {
 	isDescending bool
 
 	// pathFunc returns the full filesystem path where a given item should
-	// be stored. If it returns an error, the item is skipped.
+	// be stored. If it returns "", the item is skipped.
 	pathFunc func(meta *metadata) (string, error)
 
 	// initURL is called to synthesize a starting URL if nextURL is empty. It is
@@ -125,10 +125,10 @@ func (ps *pageStream) fetchNext(st *streamState) (bool, error) {
 	}
 
 	madeChange := false
-	for _, item := range items {
+	for i, item := range items {
 		meta, err := parseMetadata(item)
 		if err != nil {
-			return madeChange, fmt.Errorf("failed to parse metadata: %w", err)
+			return madeChange, fmt.Errorf("failed to parse metadata for item %d of %s: %w", i, reqURL, err)
 		}
 
 		if meta.UpdatedAt.After(st.Newest) {
@@ -148,9 +148,12 @@ func (ps *pageStream) fetchNext(st *streamState) (bool, error) {
 
 		path, err := ps.pathFunc(meta)
 		if err != nil {
-			// If we can't determine the path (e.g., missing issue number),
-			// skip this item.
-			return madeChange, err
+			// If we can't determine the path (e.g., missing issue number), fail.
+			return madeChange, fmt.Errorf("constructing local path for item %d of %s: %w", i, reqURL, err)
+		}
+		if path == "" {
+			// Skip
+			continue
 		}
 		dir := filepath.Dir(path)
 

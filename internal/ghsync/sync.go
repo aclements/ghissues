@@ -194,6 +194,12 @@ func (s *syncer) sync() error {
 		client:       s.client,
 		isDescending: true,
 		pathFunc: func(meta *metadata) (string, error) {
+			if meta.Issue == nil {
+				// Sometimes events don't have an issue. I can't find any
+				// documented reason for this, and it doesn't seem correlated
+				// with the event type.
+				return "", nil
+			}
 			issueNum, err := meta.issueNumber()
 			if err != nil {
 				return "", err
