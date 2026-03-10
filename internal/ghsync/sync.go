@@ -225,7 +225,7 @@ func (s *syncer) sync() error {
 		repoState: s.state,
 	}
 	if !eventsStream.hitStop && !backfill.active(&state.Backfill) {
-		s.reporter.Logf("reached end of repo events stream; starting per-issue event backfill")
+		s.reporter.Logf("reached end of repo events stream; starting per-issue event backfill\n")
 		if err := backfill.start(&state.Backfill); err != nil {
 			return fmt.Errorf("starting backfill: %w", err)
 		}
