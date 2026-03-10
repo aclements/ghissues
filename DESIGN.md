@@ -35,10 +35,53 @@ which is itself stored in a Git repository.
 The tool uses the GitHub REST API, specifically the repository-wide
 endpoints.
 
-**Data Streams:**
-1.  **Issues:** `GET /repos/:owner/:repo/issues?state=all&since={last_sync}`
-2.  **Comments:** `GET /repos/:owner/:repo/issues/comments?since={last_sync}`
-3.  **Events:** `GET /repos/:owner/:repo/issues/events`
+The tool uses four different REST data streams:
+
+- Issues (`/repos/.../issues`): The repo-wide stream of issues. Includes
+  the top post of each issue.
+- Comments (`/repos/.../issues/comments`): The repo-wide stream of
+  comments to all issues.
+- Repo-wide issue events (`/repos/.../issues/events`): The repo-wide
+  stream of events on all issues. This does not include comments, so
+  there's no duplication with the comments stream.
+- Per-issue events (`/repos/.../issues/{issue}/events`): The per-issue
+  stream of events. This is identical to the repo-wide issue events, but
+  scoped to a single issue.
+
+All GitHub streams have a pagination limit of 300 pages (or 30,000
+items). We handle this differently for different types of streams.
+
+The four streams fall into three categories:
+
+- *Filtered ascending streams* (issues, comments). These can be filtered
+  by time and yield the oldest events first. For these, we start the
+  stream at the latest timestamp we've seen and fetch as many pages from
+  the stream as we can. If we encounter a page limit, we can simply
+  start over at the latest timestamp we've seen.
+
+- *Unfiltered descending streams* (repo-wide issue events). These yield
+  events starting with the newest first. For these, we start at the
+  beginning of the stream (we have no other choice) and fetch pages
+  until we see an object who's timestamp is past the last timestamp of a
+  full stream or reach the end of the stream. Only at that point do we
+  update the full stream timestamp. This has the effect of breaking the
+  stream into "segments", where we have to fetch a complete segment
+  before we start back at the beginning with a new segment. The only
+  solution to the page limit is to fall back to another mechanism: for
+  repo-wide issue events, we fall back to per-issue events.
+
+- *Unfiltered ascending streams* (per-issue events). For these, we
+  always have to fetch the whole stream, but make aggressive use of ETag
+  filtering. These are only used as a fallback mechanism. If we
+  encounter a page limit, there's no recourse, but this is unlikely for
+  per-issue events.
+
+The per-issue events streams are only used if we have to employ the
+"backfill" strategy: if the repo-wide events stream exhausts without
+catching up to the previously synced state, that means there may be a
+gap in the event history, so the tool switches to a per-issue backfill
+process. This ensures 100% event coverage, without having to employ an
+expensive per-issue process on every sync.
 
 **Rationale:**
 *   **Why REST over GraphQL?** GraphQL suffers from the "nested
@@ -52,61 +95,14 @@ endpoints.
     comments perfectly, but it is a *per-issue* endpoint. To sync
     updates, we would have to make an API call for every single issue
     that changed. The repository-wide endpoints act as a "firehose",
-    allowing us to fetch all new comments or events across the entire
-    70,000+ issue repository in just a few API calls.
-*   **Duplication:** The repository-wide Issue Events API specifically
-    excludes comments (which are technically events). Therefore, our
-    Comments stream and Events stream are mutually exclusive; there is
-    no data duplication.
-
-**Pagination & Limits:**
-GitHub's REST API enforces a hard pagination limit of 300 pages (approx
-30,000 items) for generic list endpoints. For a repository like
-`golang/go` with over 400,000 comments, standard pagination would stop
-early.
-
-To solve this, whenever `ghissues` reaches the end of an Issues or
-Comments stream (indicated by a missing "next" Link header), it
-automatically attempts to "stitch" the firehose. It synthesizes a brand
-new API request using the `since` parameter set to the timestamp of the
-newest item seen so far. If this fresh URL still results in zero items,
-then the stream is done. This allows the tool to seamlessly traverse an
-infinite number of items over time.
-
-The Events stream does not support the `since` parameter, so it cannot
-bypass the 30,000 item limit directly. To handle this, `ghissues`
-employs a "Backfill" strategy: if the repository-wide events firehose
-exhausts without catching up to the previously synced state, the tool
-identifies a history gap and automatically transitions into an
-interleaved per-issue backfill process. This ensures 100% event fidelity
-by fetching events directly from each individual issue's endpoint
-(`/repos/.../issues/{number}/events`).
+    allowing us to fetch all new comments or events event across a
+    repository with a huge number of issues in just a few API calls.
 
 ## 3. Sync Process
 
-The tool syncs several sources of state from GitHub. The full sync state is
-captured by the `state` type, which is saved to disk after every page fetch in
-order to safely handle interruptions. The sync loop maintains no state outside
-of the `state` type.
-
-There are three categories of data streams:
-
-- Ascending streams (oldest first) with "since" filtering (issues, comments).
-  For these, we start the stream at the latest timestamp we've seen and fetch as
-  many pages from the stream as we can.
-
-- Ascending streams (oldest first) with no time filtering (per-issue events).
-  For these, we always have to fetch the whole stream. ETag filtering is
-  effective for this type of stream, but generally we try to avoid using these
-  streams.
-
-- Descending streams (newest first) with no filtering (repo-wide events). For
-  these, we start at the beginning of the stream (we have no other choice) and
-  fetch pages until we see an object who's timestamp is past the last timestamp
-  of a full stream or reach the end of the stream. Only at that point do we
-  update the full stream timestamp. This has the effect of breaking the stream
-  into "segments", where we have to fetch a complete segment before we start
-  back at the beginning.
+The full sync state is captured by the `state` type, which is saved to
+disk after every page fetch in order to safely handle interruptions. The
+sync loop maintains no state outside of the `state` type.
 
 The sync algorithm proceeds as follows:
 
@@ -132,11 +128,13 @@ The sync algorithm proceeds as follows:
 
 The synchronization state reflected in `sync_state.json` is the single
 source of truth for the entire process. Each data stream (Issues,
-Comments, Events, and Backfill) stores its full state in this object and each
-iteration of the sync loop simply updates this single source of state.
-This means there's virtually no difference between resuming an
-interrupted sync and each iteration of the regular sync loop. This
-unified approach reduces the risk of bugs during sync resumption.
+Comments, Events, and Backfill) stores its full state in this object and
+each iteration of the sync loop simply updates this single source of
+state. This is akin to "stack ripping", but forces us to be honest about
+what state is saved to disk, and thus what state we can resume from.
+This approach means there's virtually no difference between resuming an
+interrupted sync and each iteration of the regular sync loop, which
+significantly reduces the change of bugs.
 
 ## 4. Implementation Details
 
