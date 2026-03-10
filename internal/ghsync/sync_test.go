@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/aclements/ghissues/internal/mockserver"
 )
 
 type testReporter struct {
@@ -47,13 +49,13 @@ func setTestPerPage(t *testing.T, n int) {
 
 func TestSyncBasic(t *testing.T) {
 	setTestPerPage(t, 10)
-	ms := newMockServer(t)
+	ms := mockserver.New(t)
 
-	ms.addIssues(51)
-	ms.addComments(1, 1)
-	ms.addComments(51, 2)
-	ms.addEvents(1, 1)
-	ms.addEvents(49, 3)
+	ms.AddIssues(51)
+	ms.AddComments(1, 1)
+	ms.AddComments(51, 2)
+	ms.AddEvents(1, 1)
+	ms.AddEvents(49, 3)
 
 	client := ms.Client(t)
 	r := &testReporter{t: t}
@@ -64,13 +66,13 @@ func TestSyncBasic(t *testing.T) {
 	if err := Sync(client, "owner", "repo", rootDir, r); err != nil {
 		t.Fatalf("Sync failed: %v", err)
 	}
-	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+	ms.VerifyDir(t, filepath.Join(rootDir, "owner", "repo"))
 	// Check that sync attempted backfill. The initial sync also tests events
 	// that appear in both the repo-wide stream and the per-issue stream.
-	if ms.issueEventsFetches == 0 {
+	if ms.IssueEventsFetches == 0 {
 		t.Errorf("expected issue events requests")
 	}
-	ms.issueEventsFetches = 0
+	ms.IssueEventsFetches = 0
 
 	// 2. Sync again with no changes. Check that there are no spurious changes
 	// to sync_state.json.
@@ -92,26 +94,26 @@ func TestSyncBasic(t *testing.T) {
 		t.Errorf("sync_state.json changed despite no changes")
 	}
 
-	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+	ms.VerifyDir(t, filepath.Join(rootDir, "owner", "repo"))
 
-	if ms.issueEventsFetches != 0 {
+	if ms.IssueEventsFetches != 0 {
 		t.Errorf("unexpected issue events requests")
 	}
-	ms.issueEventsFetches = 0
+	ms.IssueEventsFetches = 0
 
 	// 3. Add to corpus
-	ms.addIssues(1)
-	ms.addComments(1, 2)
-	ms.addEvents(1, 2)
+	ms.AddIssues(1)
+	ms.AddComments(1, 2)
+	ms.AddEvents(1, 2)
 
 	// 4. Sync again and check
 	if err := Sync(client, "owner", "repo", rootDir, r); err != nil {
 		t.Fatalf("Sync (with changes) failed: %v", err)
 	}
-	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+	ms.VerifyDir(t, filepath.Join(rootDir, "owner", "repo"))
 
 	// This time there should be no backfill attempt.
-	if ms.issueEventsFetches != 0 {
+	if ms.IssueEventsFetches != 0 {
 		t.Errorf("unexpected issue events requests")
 	}
 }
@@ -120,14 +122,14 @@ func TestSyncResume(t *testing.T) {
 	setTestPerPage(t, 10)
 	// Configure the server to return a non-transient error that will cause the
 	// sync loop to exit after a single (new) successful request.
-	ms := newMockServer(t)
-	ms.testResume = true
+	ms := mockserver.New(t)
+	ms.TestResume = true
 
-	ms.addIssues(51)
-	ms.addComments(1, 1)
-	ms.addComments(51, 2)
-	ms.addEvents(1, 1)
-	ms.addEvents(49, 2)
+	ms.AddIssues(51)
+	ms.AddComments(1, 1)
+	ms.AddComments(51, 2)
+	ms.AddEvents(1, 1)
+	ms.AddEvents(49, 2)
 
 	client := ms.Client(t)
 	r := &testReporter{t: t}
@@ -142,10 +144,10 @@ func TestSyncResume(t *testing.T) {
 		err := Sync(client, "owner", "repo", rootDir, r)
 
 		const maxFetchesPer = 4
-		if ms.fetches > maxFetchesPer {
+		if ms.Fetches > maxFetchesPer {
 			// Make sure we're not just starting over from scratch each time and
 			// getting a little further.
-			t.Fatalf("sync made %d repeated requests; want <= %d", ms.fetches, maxFetchesPer)
+			t.Fatalf("sync made %d repeated requests; want <= %d", ms.Fetches, maxFetchesPer)
 		}
 		if err == nil {
 			success = true
@@ -154,8 +156,8 @@ func TestSyncResume(t *testing.T) {
 
 		t.Logf("sync failed (expected): %s", err)
 		// Reset failure for next iteration
-		ms.failAll = false
-		ms.fetches = 0
+		ms.FailAll = false
+		ms.Fetches = 0
 	}
 	t.Logf("sync took %d tries", tries)
 
@@ -163,15 +165,15 @@ func TestSyncResume(t *testing.T) {
 		t.Fatalf("Sync failed to complete after %d retries", maxRetries)
 	}
 
-	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+	ms.VerifyDir(t, filepath.Join(rootDir, "owner", "repo"))
 }
 
 func TestSyncUpdate(t *testing.T) {
 	setTestPerPage(t, 10)
-	ms := newMockServer(t)
+	ms := mockserver.New(t)
 
-	ms.addIssues(1)
-	ms.addComments(1, 1)
+	ms.AddIssues(1)
+	ms.AddComments(1, 1)
 
 	client := ms.Client(t)
 	r := &testReporter{t: t}
@@ -182,7 +184,7 @@ func TestSyncUpdate(t *testing.T) {
 	if err := Sync(client, "owner", "repo", rootDir, r); err != nil {
 		t.Fatalf("Sync failed: %v", err)
 	}
-	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+	ms.VerifyDir(t, filepath.Join(rootDir, "owner", "repo"))
 
 	// 2. Update issue and comment
 	ms.Issues[0].Title = "Updated Title"
@@ -194,21 +196,21 @@ func TestSyncUpdate(t *testing.T) {
 	if err := Sync(client, "owner", "repo", rootDir, r); err != nil {
 		t.Fatalf("Sync (with updates) failed: %v", err)
 	}
-	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+	ms.VerifyDir(t, filepath.Join(rootDir, "owner", "repo"))
 }
 
 func TestSyncBackfillBasic(t *testing.T) {
 	setTestPerPage(t, 10)
-	ms := newMockServer(t)
+	ms := mockserver.New(t)
 
 	// Add two issues
-	ms.addIssues(2)
+	ms.AddIssues(2)
 	// Add events to both
-	ms.addEvents(21, 1)
-	ms.addEvents(21, 2)
+	ms.AddEvents(21, 1)
+	ms.AddEvents(21, 2)
 
 	// Hide the repo-wide events to force backfill.
-	ms.forceBackfill = true
+	ms.ForceBackfill = true
 
 	client := ms.Client(t)
 	rootDir := t.TempDir()
@@ -216,23 +218,23 @@ func TestSyncBackfillBasic(t *testing.T) {
 	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
 		t.Fatalf("Sync failed: %v", err)
 	}
-	if ms.issueEventsFetches == 0 {
+	if ms.IssueEventsFetches == 0 {
 		t.Errorf("backfill did not happen")
 	}
 
 	// Verify that the event was fetched despite being missing from the firehose.
-	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+	ms.VerifyDir(t, filepath.Join(rootDir, "owner", "repo"))
 }
 
 func TestSyncBackfillETag(t *testing.T) {
 	setTestPerPage(t, 10)
-	ms := newMockServer(t)
+	ms := mockserver.New(t)
 
 	// Add an issue and multiple pages of events to it (each page is 10 events, so we add 25)
-	ms.addIssues(1)
-	ms.addEvents(25, 1) // 3 pages: 10, 10, 5
+	ms.AddIssues(1)
+	ms.AddEvents(25, 1) // 3 pages: 10, 10, 5
 
-	ms.forceBackfill = true
+	ms.ForceBackfill = true
 
 	client := ms.Client(t)
 	rootDir := t.TempDir()
@@ -242,45 +244,45 @@ func TestSyncBackfillETag(t *testing.T) {
 	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
 		t.Fatalf("First sync failed: %v", err)
 	}
-	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
-	if ms.issueEventsFetches != 3 {
-		t.Fatalf("got %d issue event fetches, but expected 3 pages", ms.issueEventsFetches)
+	ms.VerifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+	if ms.IssueEventsFetches != 3 {
+		t.Fatalf("got %d issue event fetches, but expected 3 pages", ms.IssueEventsFetches)
 	}
 
 	// Second sync, no changes. All backfill requests should hit ETags.
 	t.Log("sync with no changes")
-	ms.issueEventsFetches = 0
-	ms.etagFetches = 0
+	ms.IssueEventsFetches = 0
+	ms.EtagFetches = 0
 	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
 		t.Fatalf("Second sync failed: %v", err)
 	}
-	if ms.issueEventsFetches != 0 || ms.etagFetches != 3 {
-		t.Fatalf("expected all 3 backfill fetches to hit etags, but got %d fetches and %d etags hits", ms.issueEventsFetches, ms.etagFetches)
+	if ms.IssueEventsFetches != 0 || ms.EtagFetches != 3 {
+		t.Fatalf("expected all 3 backfill fetches to hit etags, but got %d fetches and %d etags hits", ms.IssueEventsFetches, ms.EtagFetches)
 	}
 
 	// Add a new event, check that it traverses and finds it.
 	t.Log("sync with new event")
-	ms.issueEventsFetches = 0
-	ms.etagFetches = 0
-	ms.addEvents(1, 1) // adding one more event to issue 1
+	ms.IssueEventsFetches = 0
+	ms.EtagFetches = 0
+	ms.AddEvents(1, 1) // adding one more event to issue 1
 	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
 		t.Fatalf("Third sync failed: %v", err)
 	}
-	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
-	if ms.issueEventsFetches != 1 || ms.etagFetches != 2 {
-		t.Fatalf("expected 1 new backfill fetch and 2 etags hits, but got %d fetches and %d etags hits", ms.issueEventsFetches, ms.etagFetches)
+	ms.VerifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+	if ms.IssueEventsFetches != 1 || ms.EtagFetches != 2 {
+		t.Fatalf("expected 1 new backfill fetch and 2 etags hits, but got %d fetches and %d etags hits", ms.IssueEventsFetches, ms.EtagFetches)
 	}
 }
 
 func TestSyncBackfillFullPage(t *testing.T) {
 	setTestPerPage(t, 10)
-	ms := newMockServer(t)
+	ms := mockserver.New(t)
 
 	// Add an issue and exactly 2 full pages of events (20 events)
-	ms.addIssues(1)
-	ms.addEvents(20, 1)
+	ms.AddIssues(1)
+	ms.AddEvents(20, 1)
 
-	ms.forceBackfill = true
+	ms.ForceBackfill = true
 
 	client := ms.Client(t)
 	rootDir := t.TempDir()
@@ -290,12 +292,12 @@ func TestSyncBackfillFullPage(t *testing.T) {
 	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
 		t.Fatalf("First sync failed: %v", err)
 	}
-	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+	ms.VerifyDir(t, filepath.Join(rootDir, "owner", "repo"))
 	// We expect 2 pages to be fetched.
 	// Page 1: 10 items, hasMore=true, returns Link to page 2.
 	// Page 2: 10 items, hasMore=false, returns no Link.
-	if ms.issueEventsFetches != 2 {
-		t.Fatalf("got %d issue event fetches, but expected 2 pages", ms.issueEventsFetches)
+	if ms.IssueEventsFetches != 2 {
+		t.Fatalf("got %d issue event fetches, but expected 2 pages", ms.IssueEventsFetches)
 	}
 
 	// Second sync, no changes.
@@ -303,31 +305,31 @@ func TestSyncBackfillFullPage(t *testing.T) {
 	// Page 2: ETag was NOT cached because it was a full page with no Link. Unconditional fetch.
 	//         Returns 10 items, no Link.
 	t.Log("sync with no changes")
-	ms.issueEventsFetches = 0
-	ms.etagFetches = 0
+	ms.IssueEventsFetches = 0
+	ms.EtagFetches = 0
 	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
 		t.Fatalf("Second sync failed: %v", err)
 	}
 	// 1 unconditional fetch (page 2), 1 etag hit (page 1)
-	if ms.issueEventsFetches != 1 || ms.etagFetches != 1 {
-		t.Fatalf("expected 1 new backfill fetch and 1 etags hits, but got %d fetches and %d etags hits", ms.issueEventsFetches, ms.etagFetches)
+	if ms.IssueEventsFetches != 1 || ms.EtagFetches != 1 {
+		t.Fatalf("expected 1 new backfill fetch and 1 etags hits, but got %d fetches and %d etags hits", ms.IssueEventsFetches, ms.EtagFetches)
 	}
 
 	// Add a new event (total 21). This falls onto page 3.
 	t.Log("sync with new event")
-	ms.issueEventsFetches = 0
-	ms.etagFetches = 0
-	ms.addEvents(1, 1) // adding one more event to issue 1
+	ms.IssueEventsFetches = 0
+	ms.EtagFetches = 0
+	ms.AddEvents(1, 1) // adding one more event to issue 1
 	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
 		t.Fatalf("Third sync failed: %v", err)
 	}
-	ms.verifyDir(t, filepath.Join(rootDir, "owner", "repo"))
+	ms.VerifyDir(t, filepath.Join(rootDir, "owner", "repo"))
 
 	// Page 1: ETag hit (304). Link to page 2.
 	// Page 2: ETag NOT cached. Unconditional fetch. Returns 10 items. hasMore=true (end=20 < 21). Link to page 3.
 	// Page 3: Unconditional fetch. Returns 1 item. hasMore=false. ETag IS cached (1 item < 10).
-	if ms.issueEventsFetches != 2 || ms.etagFetches != 1 {
-		t.Fatalf("expected 2 new backfill fetch and 1 etags hits, but got %d fetches and %d etags hits", ms.issueEventsFetches, ms.etagFetches)
+	if ms.IssueEventsFetches != 2 || ms.EtagFetches != 1 {
+		t.Fatalf("expected 2 new backfill fetch and 1 etags hits, but got %d fetches and %d etags hits", ms.IssueEventsFetches, ms.EtagFetches)
 	}
 
 	// Fourth sync, no changes.
@@ -335,13 +337,12 @@ func TestSyncBackfillFullPage(t *testing.T) {
 	// Page 2: ETag hit. Link to Page 3. (Because page 2 returned Link last time, we DID cache its ETag).
 	// Page 3: ETag hit. No link.
 	t.Log("fourth sync with no changes")
-	ms.issueEventsFetches = 0
-	ms.etagFetches = 0
+	ms.IssueEventsFetches = 0
+	ms.EtagFetches = 0
 	if err := Sync(client, "owner", "repo", rootDir, nil); err != nil {
 		t.Fatalf("Fourth sync failed: %v", err)
 	}
-	if ms.issueEventsFetches != 0 || ms.etagFetches != 3 {
-		t.Fatalf("expected 0 new backfill fetches and 3 etags hits, but got %d fetches and %d etags hits", ms.issueEventsFetches, ms.etagFetches)
+	if ms.IssueEventsFetches != 0 || ms.EtagFetches != 3 {
+		t.Fatalf("expected 0 new backfill fetches and 3 etags hits, but got %d fetches and %d etags hits", ms.IssueEventsFetches, ms.EtagFetches)
 	}
 }
-

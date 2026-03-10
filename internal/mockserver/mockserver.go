@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package ghsync
+// Package mockserver provides a mock GitHub API server for testing.
+package mockserver
 
 import (
 	"crypto/sha256"
@@ -23,7 +24,8 @@ import (
 	"github.com/aclements/ghissues/internal/github"
 )
 
-type mockIssue struct {
+// Issue represents a mock GitHub issue.
+type Issue struct {
 	ID        int64     `json:"id"`
 	Number    int       `json:"number"`
 	CreatedAt time.Time `json:"created_at"`
@@ -32,7 +34,8 @@ type mockIssue struct {
 	Title     string    `json:"title"`
 }
 
-type mockComment struct {
+// Comment represents a mock GitHub issue comment.
+type Comment struct {
 	ID        int64     `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -40,7 +43,8 @@ type mockComment struct {
 	Body      string    `json:"body"`
 }
 
-type mockEvent struct {
+// Event represents a mock GitHub issue event.
+type Event struct {
 	ID        int64     `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	Issue     *struct {
@@ -49,45 +53,47 @@ type mockEvent struct {
 	Event string `json:"event"`
 }
 
-type mockServer struct {
+// Server is a mock GitHub API server.
+type Server struct {
 	t *testing.T
 
-	Issues   []mockIssue
-	Comments []mockComment
-	Events   []mockEvent
+	Issues   []Issue
+	Comments []Comment
+	Events   []Event
 
 	// nextID is for generating object IDs
 	nextID int64
 
-	// fetches counts successful fetches, not including NotModified resposes.
+	// Fetches counts successful fetches, not including NotModified responses.
 	// The caller is allowed to reset this.
-	fetches int
-	// etagFetches counts NotModified fetches.
-	etagFetches int
-	// issueEventsFetches is the number of successful issue events fetches.
-	issueEventsFetches int
+	Fetches int
+	// EtagFetches counts NotModified fetches.
+	EtagFetches int
+	// IssueEventsFetches is the number of successful issue events fetches.
+	IssueEventsFetches int
 
 	// maxFetches is a limit on fetches to prevent infinite loops.
 	maxFetches int
 
-	// forceBackfill causes the repo-wide issue events endpoint to return an
+	// ForceBackfill causes the repo-wide issue events endpoint to return an
 	// empty list, forcing a backfill from the per-issue events endpoints.
-	forceBackfill bool
+	ForceBackfill bool
 
-	// testResume enables "resumption testing" mode, where the first time the
+	// TestResume enables "resumption testing" mode, where the first time the
 	// server gets a request for a new URL, it will set failAll to enter failure
 	// mode, which causes it to respond to this and all further requests with
 	// "Bad Request". The caller can reset failAll and retry, which will allow a
 	// sequent request for the previously failed URL to succeed.
-	testResume bool
-	failAll    bool
+	TestResume bool
+	FailAll    bool
 	seenURLs   map[string]bool
 
 	mux *http.ServeMux
 }
 
-func newMockServer(t *testing.T) *mockServer {
-	s := &mockServer{
+// New creates a new mock GitHub API server.
+func New(t *testing.T) *Server {
+	s := &Server{
 		t:          t,
 		seenURLs:   make(map[string]bool),
 		nextID:     1,
@@ -101,7 +107,7 @@ func newMockServer(t *testing.T) *mockServer {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		resp, hasMore := filterAndPage(s.Comments, params, func(c mockComment) time.Time { return c.UpdatedAt })
+		resp, hasMore := filterAndPage(s.Comments, params, func(c Comment) time.Time { return c.UpdatedAt })
 		s.writeResponse(w, r, resp, hasMore, params.page)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/issues/events", func(w http.ResponseWriter, r *http.Request) {
@@ -112,10 +118,10 @@ func newMockServer(t *testing.T) *mockServer {
 		}
 		params.direction = "desc"
 		events := s.Events
-		if s.forceBackfill {
+		if s.ForceBackfill {
 			events = nil
 		}
-		resp, hasMore := filterAndPage(events, params, func(e mockEvent) time.Time { return e.CreatedAt })
+		resp, hasMore := filterAndPage(events, params, func(e Event) time.Time { return e.CreatedAt })
 		s.writeResponse(w, r, resp, hasMore, params.page)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/issues/{issueNum}/events", func(w http.ResponseWriter, r *http.Request) {
@@ -130,16 +136,16 @@ func newMockServer(t *testing.T) *mockServer {
 			http.Error(w, "bad issue number", http.StatusBadRequest)
 			return
 		}
-		var issueEvents []mockEvent
+		var issueEvents []Event
 		for _, e := range s.Events {
 			if e.Issue != nil && e.Issue.Number == issueNum {
 				issueEvents = append(issueEvents, e)
 			}
 		}
-		resp, hasMore := filterAndPage(issueEvents, params, func(e mockEvent) time.Time { return e.CreatedAt })
+		resp, hasMore := filterAndPage(issueEvents, params, func(e Event) time.Time { return e.CreatedAt })
 		if s.writeResponse(w, r, resp, hasMore, params.page) {
 			// Only increment on a full fetch
-			s.issueEventsFetches++
+			s.IssueEventsFetches++
 		}
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/issues", func(w http.ResponseWriter, r *http.Request) {
@@ -148,17 +154,18 @@ func newMockServer(t *testing.T) *mockServer {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		resp, hasMore := filterAndPage(s.Issues, params, func(i mockIssue) time.Time { return i.UpdatedAt })
+		resp, hasMore := filterAndPage(s.Issues, params, func(i Issue) time.Time { return i.UpdatedAt })
 		s.writeResponse(w, r, resp, hasMore, params.page)
 	})
 	s.mux = mux
 	return s
 }
 
-func (s *mockServer) addIssues(n int) {
+// AddIssues adds n mock issues to the server.
+func (s *Server) AddIssues(n int) {
 	for range n {
 		t := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC).Add(time.Duration(s.nextID) * time.Hour)
-		s.Issues = append(s.Issues, mockIssue{
+		s.Issues = append(s.Issues, Issue{
 			ID:        s.nextID,
 			Number:    int(s.nextID),
 			CreatedAt: t,
@@ -170,10 +177,11 @@ func (s *mockServer) addIssues(n int) {
 	}
 }
 
-func (s *mockServer) addComments(n int, issueNum int) {
+// AddComments adds n mock comments to the specified issue.
+func (s *Server) AddComments(n int, issueNum int) {
 	for range n {
 		t := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC).Add(time.Duration(s.nextID) * time.Hour)
-		s.Comments = append(s.Comments, mockComment{
+		s.Comments = append(s.Comments, Comment{
 			ID:        s.nextID,
 			CreatedAt: t,
 			UpdatedAt: t,
@@ -184,10 +192,11 @@ func (s *mockServer) addComments(n int, issueNum int) {
 	}
 }
 
-func (s *mockServer) addEvents(n int, issueNum int) {
+// AddEvents adds n mock events to the specified issue.
+func (s *Server) AddEvents(n int, issueNum int) {
 	for range n {
 		t := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC).Add(time.Duration(s.nextID) * time.Hour)
-		s.Events = append(s.Events, mockEvent{
+		s.Events = append(s.Events, Event{
 			ID:        s.nextID,
 			CreatedAt: t,
 			Issue: &struct {
@@ -199,10 +208,11 @@ func (s *mockServer) addEvents(n int, issueNum int) {
 	}
 }
 
-func (s *mockServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+// ServeHTTP implements http.Handler.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.t.Logf("mock serving %s", r.URL.String())
-	if s.testResume {
-		if s.failAll {
+	if s.TestResume {
+		if s.FailAll {
 			s.t.Errorf("  request received after injected failure")
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -211,7 +221,7 @@ func (s *mockServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.t.Logf("  injecting failure response")
 			// Allow it on the next round.
 			s.seenURLs[r.URL.String()] = true
-			s.failAll = true
+			s.FailAll = true
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -227,7 +237,7 @@ type pageParams struct {
 	direction string
 }
 
-func (s *mockServer) getParams(r *http.Request, canSince bool) (pageParams, error) {
+func (s *Server) getParams(r *http.Request, canSince bool) (pageParams, error) {
 	var err error
 
 	pageStr := r.URL.Query().Get("page")
@@ -274,8 +284,8 @@ func (s *mockServer) getParams(r *http.Request, canSince bool) (pageParams, erro
 	return pageParams{page: page, perPage: perPage, since: since, direction: direction}, nil
 }
 
-func (s *mockServer) writeResponse(w http.ResponseWriter, r *http.Request, resp any, hasMore bool, page int) bool {
-	if s.fetches >= s.maxFetches {
+func (s *Server) writeResponse(w http.ResponseWriter, r *http.Request, resp any, hasMore bool, page int) bool {
+	if s.Fetches >= s.maxFetches {
 		s.t.Errorf("max fetch limit (%d) reached; infinite loop?", s.maxFetches)
 		w.WriteHeader(http.StatusForbidden)
 		return false
@@ -290,7 +300,7 @@ func (s *mockServer) writeResponse(w http.ResponseWriter, r *http.Request, resp 
 	if r.Header.Get("If-None-Match") == etag {
 		s.t.Log("  matched ETag")
 		w.WriteHeader(http.StatusNotModified)
-		s.etagFetches++
+		s.EtagFetches++
 		return false
 	}
 
@@ -313,7 +323,7 @@ func (s *mockServer) writeResponse(w http.ResponseWriter, r *http.Request, resp 
 	}
 	w.WriteHeader(http.StatusOK)
 	w.Write(body)
-	s.fetches++
+	s.Fetches++
 	return true
 }
 
@@ -347,7 +357,8 @@ func filterAndPage[T any](data []T, params pageParams, timestamp func(T) time.Ti
 	return filtered[start:end], end < len(filtered)
 }
 
-func (s *mockServer) verifyDir(t *testing.T, dir string) {
+// VerifyDir verifies that the directory contains the expected files for the server's state.
+func (s *Server) VerifyDir(t *testing.T, dir string) {
 	t.Helper()
 
 	expectedFiles := make(map[string]any)
@@ -457,7 +468,8 @@ func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return t.Transport.RoundTrip(req)
 }
 
-func (s *mockServer) Client(t *testing.T) *github.Client {
+// Client returns a GitHub client configured to use the mock server.
+func (s *Server) Client(t *testing.T) *github.Client {
 	ts := httptest.NewServer(s)
 	t.Cleanup(ts.Close)
 
