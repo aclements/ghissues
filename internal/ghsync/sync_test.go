@@ -39,7 +39,14 @@ func (r *testReporter) ProgressDone(msg string, status string) {
 	r.progress = ""
 }
 
+func setTestPerPage(t *testing.T, n int) {
+	old := perPage
+	perPage = n
+	t.Cleanup(func() { perPage = old })
+}
+
 func TestSyncBasic(t *testing.T) {
+	setTestPerPage(t, 10)
 	ms := newMockServer(t)
 
 	ms.addIssues(51)
@@ -110,6 +117,7 @@ func TestSyncBasic(t *testing.T) {
 }
 
 func TestSyncResume(t *testing.T) {
+	setTestPerPage(t, 10)
 	// Configure the server to return a non-transient error that will cause the
 	// sync loop to exit after a single (new) successful request.
 	ms := newMockServer(t)
@@ -159,6 +167,7 @@ func TestSyncResume(t *testing.T) {
 }
 
 func TestSyncUpdate(t *testing.T) {
+	setTestPerPage(t, 10)
 	ms := newMockServer(t)
 
 	ms.addIssues(1)
@@ -189,6 +198,7 @@ func TestSyncUpdate(t *testing.T) {
 }
 
 func TestSyncBackfillBasic(t *testing.T) {
+	setTestPerPage(t, 10)
 	ms := newMockServer(t)
 
 	// Add two issues
@@ -215,6 +225,7 @@ func TestSyncBackfillBasic(t *testing.T) {
 }
 
 func TestSyncBackfillETag(t *testing.T) {
+	setTestPerPage(t, 10)
 	ms := newMockServer(t)
 
 	// Add an issue and multiple pages of events to it (each page is 10 events, so we add 25)

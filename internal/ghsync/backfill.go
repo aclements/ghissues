@@ -66,7 +66,7 @@ func (bs *backfillStream) nextIssue(st *backfillState) error {
 		return err
 	}
 	st.Stream = streamState{
-		NextURL: fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/events?per_page=100", bs.owner, bs.repo, issueNum),
+		NextURL: fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/events?per_page=%d", bs.owner, bs.repo, issueNum, perPage),
 		cache:   etagCache,
 	}
 	return nil

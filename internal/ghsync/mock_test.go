@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -95,56 +96,60 @@ func newMockServer(t *testing.T) *mockServer {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /repos/{owner}/{repo}/issues/comments", func(w http.ResponseWriter, r *http.Request) {
-		page, since, direction, err := s.getParams(r, true)
+		params, err := s.getParams(r, true)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		resp, hasMore := filterAndPage(s.Comments, since, page, direction, func(c mockComment) time.Time { return c.UpdatedAt })
-		s.writeResponse(w, r, resp, hasMore, page)
+		resp, hasMore := filterAndPage(s.Comments, params, func(c mockComment) time.Time { return c.UpdatedAt })
+		s.writeResponse(w, r, resp, hasMore, params.page)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/issues/events", func(w http.ResponseWriter, r *http.Request) {
-		page, _, _, err := s.getParams(r, false)
+		params, err := s.getParams(r, false)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		params.direction = "desc"
 		events := s.Events
 		if s.forceBackfill {
 			events = nil
 		}
-		resp, hasMore := filterAndPage(events, time.Time{}, page, "desc", func(e mockEvent) time.Time { return e.CreatedAt })
-		s.writeResponse(w, r, resp, hasMore, page)
+		resp, hasMore := filterAndPage(events, params, func(e mockEvent) time.Time { return e.CreatedAt })
+		s.writeResponse(w, r, resp, hasMore, params.page)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/issues/{issueNum}/events", func(w http.ResponseWriter, r *http.Request) {
-		page, _, _, err := s.getParams(r, false)
+		params, err := s.getParams(r, false)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-
-		var issueNum int
-		fmt.Sscanf(r.PathValue("issueNum"), "%d", &issueNum)
-
+		params.direction = "asc"
+		issueNum, err := strconv.Atoi(r.PathValue("issueNum"))
+		if err != nil {
+			http.Error(w, "bad issue number", http.StatusBadRequest)
+			return
+		}
 		var issueEvents []mockEvent
 		for _, e := range s.Events {
 			if e.Issue != nil && e.Issue.Number == issueNum {
 				issueEvents = append(issueEvents, e)
 			}
 		}
-		resp, hasMore := filterAndPage(issueEvents, time.Time{}, page, "asc", func(e mockEvent) time.Time { return e.CreatedAt })
-		if s.writeResponse(w, r, resp, hasMore, page) {
+		resp, hasMore := filterAndPage(issueEvents, params, func(e mockEvent) time.Time { return e.CreatedAt })
+		if s.writeResponse(w, r, resp, hasMore, params.page) {
+			// Only increment on a full fetch
 			s.issueEventsFetches++
 		}
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/issues", func(w http.ResponseWriter, r *http.Request) {
-		page, since, direction, err := s.getParams(r, true)
+		params, err := s.getParams(r, true)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		resp, hasMore := filterAndPage(s.Issues, since, page, direction, func(i mockIssue) time.Time { return i.UpdatedAt })
-		s.writeResponse(w, r, resp, hasMore, page)
+		resp, hasMore := filterAndPage(s.Issues, params, func(i mockIssue) time.Time { return i.UpdatedAt })
+		s.writeResponse(w, r, resp, hasMore, params.page)
 	})
 	s.mux = mux
 	return s
@@ -215,14 +220,29 @@ func (s *mockServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-func (s *mockServer) getParams(r *http.Request, canSince bool) (int, time.Time, string, error) {
+type pageParams struct {
+	page      int
+	perPage   int
+	since     time.Time
+	direction string
+}
+
+func (s *mockServer) getParams(r *http.Request, canSince bool) (pageParams, error) {
 	var err error
 
 	pageStr := r.URL.Query().Get("page")
 	page := 1
 	if pageStr != "" {
 		if _, err := fmt.Sscanf(pageStr, "%d", &page); err != nil || page < 1 {
-			return 0, time.Time{}, "", fmt.Errorf("bad page %q", pageStr)
+			return pageParams{}, fmt.Errorf("bad page %q", pageStr)
+		}
+	}
+
+	perPageStr := r.URL.Query().Get("per_page")
+	perPage := 10
+	if perPageStr != "" {
+		if _, err := fmt.Sscanf(perPageStr, "%d", &perPage); err != nil || perPage < 1 {
+			return pageParams{}, fmt.Errorf("bad per_page %q", perPageStr)
 		}
 	}
 
@@ -230,17 +250,17 @@ func (s *mockServer) getParams(r *http.Request, canSince bool) (int, time.Time, 
 	var since time.Time
 	if sinceStr != "" {
 		if !canSince {
-			return 0, time.Time{}, "", fmt.Errorf("unsupported 'since' parameter")
+			return pageParams{}, fmt.Errorf("unsupported 'since' parameter")
 		}
 		since, err = time.Parse(time.RFC3339, sinceStr)
 		if err != nil {
-			return 0, time.Time{}, "", fmt.Errorf("bad since %q", pageStr)
+			return pageParams{}, fmt.Errorf("bad since %q", pageStr)
 		}
 	}
 
 	direction := r.URL.Query().Get("direction")
 	if direction != "" && !canSince {
-		return 0, time.Time{}, "", fmt.Errorf("unsupported 'direction' parameter")
+		return pageParams{}, fmt.Errorf("unsupported 'direction' parameter")
 	}
 	switch direction {
 	case "":
@@ -248,10 +268,10 @@ func (s *mockServer) getParams(r *http.Request, canSince bool) (int, time.Time, 
 	case "asc", "desc":
 		// Ok
 	default:
-		return 0, time.Time{}, "", fmt.Errorf("bad direction %q", direction)
+		return pageParams{}, fmt.Errorf("bad direction %q", direction)
 	}
 
-	return page, since, direction, nil
+	return pageParams{page: page, perPage: perPage, since: since, direction: direction}, nil
 }
 
 func (s *mockServer) writeResponse(w http.ResponseWriter, r *http.Request, resp any, hasMore bool, page int) bool {
@@ -297,13 +317,11 @@ func (s *mockServer) writeResponse(w http.ResponseWriter, r *http.Request, resp 
 	return true
 }
 
-func filterAndPage[T any](data []T, since time.Time, page int, direction string, timestamp func(T) time.Time) ([]T, bool) {
-	const pageLen = 10
-
+func filterAndPage[T any](data []T, params pageParams, timestamp func(T) time.Time) ([]T, bool) {
 	// Restore sort of backing data, if necessary.
 	if timestamp != nil {
 		dir := 1
-		if direction == "desc" {
+		if params.direction == "desc" {
 			dir = -1
 		}
 		cmp := func(a, b T) int { return dir * timestamp(a).Compare(timestamp(b)) }
@@ -314,18 +332,18 @@ func filterAndPage[T any](data []T, since time.Time, page int, direction string,
 
 	// Filter by "since".
 	var filtered []T
-	if since.IsZero() || timestamp == nil {
+	if params.since.IsZero() || timestamp == nil {
 		filtered = data
 	} else {
-		i, _ := slices.BinarySearchFunc(data, since, func(d T, key time.Time) int {
+		i, _ := slices.BinarySearchFunc(data, params.since, func(d T, key time.Time) int {
 			return timestamp(d).Compare(key)
 		})
 		filtered = data[i:]
 	}
 
 	// Get page.
-	start := min((page-1)*pageLen, len(filtered))
-	end := min(start+pageLen, len(filtered))
+	start := min((params.page-1)*params.perPage, len(filtered))
+	end := min(start+params.perPage, len(filtered))
 	return filtered[start:end], end < len(filtered)
 }
 

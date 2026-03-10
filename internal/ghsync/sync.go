@@ -47,6 +47,10 @@ func (noopReporter) Logf(format string, args ...any) {}
 func (noopReporter) Progress(msg string)             {}
 func (noopReporter) ProgressDone(msg, status string) {}
 
+// perPage is the number of items to fetch per API page.
+// It is a variable to allow overriding in tests.
+var perPage = 100
+
 // Sync performs an incremental synchronization of issues, comments, and events
 // for the specified repository into the provided root directory.
 //
@@ -149,7 +153,7 @@ func (s *syncer) sync() error {
 			return filepath.Join(s.baseDir, "issues", fmt.Sprintf("%d", issueNum), "issue.json"), nil
 		},
 		initURL: func(since time.Time) string {
-			urlStr := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues?state=all&sort=updated&direction=asc&per_page=100", s.owner, s.repo)
+			urlStr := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues?state=all&sort=updated&direction=asc&per_page=%d", s.owner, s.repo, perPage)
 			if !since.IsZero() {
 				urlStr += "&since=" + url.QueryEscape(since.Format(time.RFC3339))
 			}
@@ -172,7 +176,7 @@ func (s *syncer) sync() error {
 			return filepath.Join(s.baseDir, "issues", fmt.Sprintf("%d", issueNum), fmt.Sprintf("%s-comment-%d.json", timeStr, meta.ID)), nil
 		},
 		initURL: func(since time.Time) string {
-			urlStr := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/comments?sort=updated&direction=asc&per_page=100", s.owner, s.repo)
+			urlStr := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/comments?sort=updated&direction=asc&per_page=%d", s.owner, s.repo, perPage)
 			if !since.IsZero() {
 				urlStr += "&since=" + url.QueryEscape(since.Format(time.RFC3339))
 			}
@@ -188,7 +192,7 @@ func (s *syncer) sync() error {
 		// The events stream does not support restarting via since. If we have no next URL,
 		// initialize it to the first page. We use state.Events.StopTime to stop once we
 		// reach events we've already processed.
-		state.Events.NextURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/events?per_page=100", s.owner, s.repo)
+		state.Events.NextURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/events?per_page=%d", s.owner, s.repo, perPage)
 	}
 	eventsStream := &pageStream{
 		client:       s.client,
