@@ -100,6 +100,7 @@ func writeJSON(val any, path string) error {
 	if err != nil {
 		return fmt.Errorf("marshaling state: %w", err)
 	}
+	data = append(data, '\n')
 
 	tmpPath := path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
